@@ -2,7 +2,9 @@
 
 > **19231224 卢恒润**
 
-## PintosOS文件目录结构
+[TOC]
+
+## PintosOS文件目录结构	
 
 Pintos是美国斯坦福大学操作系统课程的实验项目，作为一个小型操作系统，Pintos实现了进程管理，多线程并发控制，文件系统，虚拟内存等功能，但是这些功能还并不完善，你需要做的就是对这个文件进行相应的代码添加，修改或者删除，如果您能通过所有的测试点，则实验成功。
 
@@ -198,22 +200,417 @@ pintos-gdb kernel.o
 
 **重新实现它以避免繁忙的等待。**
 
-### 实现思路
 
-> `time_sleep()`函数源码
+
+### 函数分析
+
+#### `time_sleep()`函数
 
 ```c
-/*
-	timer_sleep函数在devices/timer.c。系统现在是使用busy wait实现的，即线程不停地循环，直到时间片耗尽。更改timer_sleep的实现方式。
-*/
+/* Sleeps for approximately TICKS timer ticks.Interrupts must be turned on. */
 
-void timer_sleep (int64_t ticks) 
+void
+timer_sleep (int64_t ticks) 
 {
   int64_t start = timer_ticks ();
 
   ASSERT (intr_get_level () == INTR_ON);
   while (timer_elapsed (start) < ticks) 
     thread_yield ();
+}
+```
+
+`timer_sleep`函数在`devices/timer.c`。系统现在是使用`busy wait`实现的，**即线程不停地循环，直到时间片耗尽**。更改`timer_sleep`的实现方式。
+
+为了更好的理解代码实现细节，下面进行逐句解析：
+
+函数传入一个int类型的时间片，进入代码后，第一行定义了一个int类型的start变量，并将其赋值为`timer_ticks()`函数的返回值。
+
+
+
+#### `timer_ticks()`函数
+
+```c
+/* Returns the number of timer ticks since the OS booted. */
+
+int64_t
+timer_ticks (void) 
+{
+  enum intr_level old_level = intr_disable ();
+  int64_t t = ticks;
+  intr_set_level (old_level);
+  return t;
+}
+```
+
+> 返回值类型为int类型的函数，根据注释，我们可以发现其功能是：**返回自操作系统启动以来的计时器计时次数**
+
+函数中出现了一个`enum intr_level`，我们找出其定义
+
+
+
+#### `enum intr_level`
+
+通过Clion的全文搜索功能，我们可以发现`enum intr_level`定义在`threads/interrupt.h`文件中
+
+```c
+/* Interrupts on or off? */
+
+enum intr_level 
+{
+    INTR_OFF,             /* Interrupts disabled. */
+    INTR_ON               /* Interrupts enabled. */
+};
+```
+
+根据注释，我们能推断出`enum intr_level`就是代表了当前能否被中断的一个数据格式，其中包含了能中断或者不能被中断
+
+
+
+#### `intr_disable()`函数
+
+在`threads/interrupt.c`文件中我找到了`intr_disable()`函数的定义
+
+```c
+/* Disables interrupts and returns the previous interrupt status. */
+
+enum intr_level
+intr_disable (void) 
+{
+  enum intr_level old_level = intr_get_level ();
+
+  /* Disable interrupts by clearing the interrupt flag.
+     See [IA32-v2b] "CLI" and [IA32-v3a] 5.8.1 "Masking Maskable
+     Hardware Interrupts". */
+  asm volatile ("cli" : : : "memory");
+
+  return old_level;
+}
+```
+
+> 函数功能：**禁用中断并返回上一个中断状态**
+
+整个函数做了两件事，一个是调用`intr_get_level()`函数，并将其返回值赋值给`old_level`，之后再执行了一行语句：
+
+```c
+asm volatile ("cli" : : : "memory");
+```
+
+注释：通过清除中断标志来禁用中断，结合语义，这其实是在C语言中调用了汇编指令来实现的禁用中断指令，具体实现细节我们不需要去了解，我们只需要知道这个函数可以禁用中断即可
+
+接下来，我们继续寻找`intr_get_level()`函数
+
+
+
+#### `intr_get_level()`函数
+
+函数定义位置：`threads/interrupt.c`
+
+```c
+/* Returns the current interrupt status. */
+
+intr_get_level (void) 
+{
+  uint32_t flags;
+
+  /* Push the flags register on the processor stack, then pop the
+     value off the stack into `flags'.  See [IA32-v2b] "PUSHF"
+     and "POP" and [IA32-v3a] 5.8.1 "Masking Maskable Hardware
+     Interrupts". */
+  asm volatile ("pushfl; popl %0" : "=g" (flags));
+
+  return flags & FLAG_IF ? INTR_ON : INTR_OFF;
+}
+```
+
+> 函数功能：**返回当前中断状态**
+
+`uint32_t`是一种类似于无符号整数的类型（猜测，因为我还没有找到其具体的定义位置）
+
+这下面又是一个汇编指令：
+
+```c
+asm volatile ("pushfl; popl %0" : "=g" (flags));
+```
+
+具体实现细节我们不需要求了解，只需要知道调用`intr_get_level()`函数就可以返回当前中断状态即可
+
+
+
+至此，`timer_ticks ()`函数的调用已经到这里就结束了
+
+我们回顾一下，`time_sleep()`函数调用了`timer_ticks()`函数，其中将函数`inter_disable()`的返回值赋值给了`old_level`，而`inter_disable()`函数的作用是将当前状态设置为不可中断，并返回上一次中断状态，**因此`old_level`中存储的就是上一次的中断状态**
+
+那么之后`old_level`又去哪了呢？我们继续往下看
+
+之后`timer_ticks()`函数执行了：
+
+```c
+int64_t t = ticks;
+intr_set_level (old_level);
+```
+
+`ticks`是定义在`timer.c`文件中的一个全局变量，其定义如下：
+
+```c
+/* Number of timer ticks since OS booted. */
+
+static int64_t ticks;
+```
+
+注释：**自操作系统启动以来的计时器计时次数**
+
+因此，`t`就是自操作系统启动以来的计时器计时次数
+
+这之后`timer_ticks()`函数又调用了`intr_set_level()`函数，我们来找出该函数的定义
+
+
+
+#### `intr_set_level()`函数
+
+函数位置：`threads/interrupt.c`
+
+```c
+/* Enables or disables interrupts as specified by LEVEL and
+   returns the previous interrupt status. */
+
+enum intr_level
+intr_set_level (enum intr_level level) 
+{
+  return level == INTR_ON ? intr_enable () : intr_disable ();
+}
+```
+
+> 函数功能：**启用或禁用由级别指定的中断，返回先前的中断状态**
+
+因为`INTR_ON`在`enum intr_level`中就已经定义过为enabled中断，所以如果之前的中断（`level`）是允许中断的 ，就调用`intr_enable()`函数，否则就调用`intr_disable()`函数
+
+那么类似于我们之前讨论的`intr_disable()`函数，`intr_enable()`函数的定义也类似
+
+
+
+#### `intr_enable()`函数
+
+函数位置：`threads/interrupt.c`
+
+```c
+/* Enables interrupts and returns the previous interrupt status. */
+
+enum intr_level
+intr_enable (void) 
+{
+  enum intr_level old_level = intr_get_level ();
+    
+  ASSERT (!intr_context ());
+
+  /* Enable interrupts by setting the interrupt flag.
+
+     See [IA32-v2b] "STI" and [IA32-v3a] 5.8.1 "Masking Maskable
+     Hardware Interrupts". */
+  asm volatile ("sti");
+
+  return old_level;
+}
+```
+
+> 函数功能：**启用中断并返回上一个中断状态**
+
+其定义类型与`intr_disable()`函数定义类型类似，但是其多了一行断言语句：
+
+```c
+ASSERT (!intr_context ());
+```
+
+
+
+#### `intr_context()`函数
+
+函数位置：`threads/interrupt.c`
+
+```c
+/* Returns true during processing of an external interrupt
+   and false at all other times. */
+
+bool
+intr_context (void) 
+{
+  return in_external_intr;
+}
+```
+
+> 函数功能：**在处理外部中断期间返回true，其他时间返回值都是false**
+
+`in_external_intr`是一个全局变量，其定义为：
+
+```c
+static bool in_external_intr;   /* Are we processing an external interrupt? */
+```
+
+> 这是一个bool类型的变量值，**代表着我们当前是否正在处理外部中断**
+
+因此，只有在我们当前没有正在处理外部中断时，断言才能继续向下运行
+
+
+
+因此，`intr_set_level()`函数的作用就是判断之前的中断类型，如果是允许中断，则调用`intr_enable()`函数启用中断并继续返回上一个中断状态，否则调用`intr_disable()`函数
+
+
+
+**在返回了总中断次数`t`后，函数`timer_ticks()`执行完毕**
+
+那么，我们回过头来看，函数`timer_ticks()`都做了什么？ 
+
+```c
+int64_t timer_ticks (void) 
+{
+  enum intr_level old_level = intr_disable ();
+  int64_t t = ticks;
+  intr_set_level (old_level);
+  return t;
+}
+```
+
+通过`intr_disable()`函数使得当前进程无法被中断，怎么样，是不是看到了一丝类似于原子操作的影子，之后将`t`赋值为操作系统自启动以来计时器计时次数，之后再调用函数`intr_set_level()`来根据进入函数`intr_disable()`前的中断状态来还原当前进程的中断状态。**一个禁止中断，一个还原中断状态，这其实就是一个原子操作**，使得在进行操作：
+
+```c
+int64_t t = ticks;
+```
+
+不会被其他进程打断
+
+
+
+**至此，函数`timer_sleep()`第一行语句执行完毕：**
+
+```c
+int64_t start = timer_ticks ();
+```
+
+**之后，函数`timer_sleep()`执行第二行语句：**
+
+```c
+ASSERT (intr_get_level () == INTR_ON);
+```
+
+`ASSERT`断言是在前面Debug Tools中的一个函数，这里便不再赘述
+
+这里使得只有当前中断状态为可中断时，函数才能继续向下执行，因为如果当前进程不可中断，下面的while循环：
+
+```c
+while (timer_elapsed (start) < ticks) 
+    thread_yield ();
+```
+
+就可能因为是死循环而且无法被打断，导致程序无法跳出`timer_sleep()`函数
+
+
+
+接下来，我们就来看看while循环中的函数`timer_elapsed()`
+
+
+
+#### `timer_elapsed()`函数
+
+函数位置：`devices/timer.c`
+
+```c
+/* Returns the number of timer ticks elapsed since THEN, which
+   should be a value once returned by timer_ticks(). */
+
+int64_t
+timer_elapsed (int64_t then) 
+{
+  return timer_ticks () - then;
+}
+```
+
+> 函数功能：**返回从then时起经过的计时器计时数，该值为`timer_ticks()`函数返回的值**
+
+
+
+因此，**while实质上就是在`ticks`的时间内不断循环执行`thread_yield()`函数**
+
+
+
+那么，`thread_yield()`函数是什么呢？
+
+
+
+#### `thread_yield()`函数
+
+函数位置：`threads/thread.c`
+
+```c
+/* Yields the CPU.  The current thread is not put to sleep and
+   may be scheduled again immediately at the scheduler's whim. */
+
+void
+thread_yield (void) 
+{
+  // thread_current()函数功能：返回当前线程起始指针位置
+  struct thread *cur = thread_current ();
+  enum intr_level old_level;
+  
+  // 当前线程没有在处理外部中断
+  ASSERT (!intr_context ());
+  // 禁止中断，并返回上一次中断状态
+  old_level = intr_disable ();
+  // idle_thread：空闲进程
+  if (cur != idle_thread) 
+    // 如果当前线程不是空闲的线程就调用list_push_back把当前线程的元素添加到绪队列里面，并把线程改成THREAD_READY（就绪态）状态
+    list_push_back (&ready_list, &cur->elem);
+  cur->status = THREAD_READY;
+  // 调度安排新进程，schedule其实就是拿下一个线程切换过来继续run
+  schedule ();
+  // 启用或禁用由级别指定的中断，返回先前的中断状态
+  intr_set_level (old_level);
+}
+```
+
+> 函数功能：**让出CPU**
+
+**由于关于线程方面的Pintos源代码中的定义都很复杂，这里我们只是简单研究一下结构，主要记住系统源码中各函数的功能即可**
+
+其实，这其中也进行了原子操作
+
+说的通俗一点，`thread_yield()`函数的功能就是：**把当前线程扔到就绪队列里， 然后重新`schedule()`， 注意这里如果ready队列为空的话当前线程会继续在cpu执行**
+
+
+
+> 再回到我们的主函数`time_sleep()`，我们理解了函数后面的调用之后，应该能判断出，while循环做了一件事，**那就是在时间`tisks`内，不断地执行函数`thread_yield()`，将当前线程放入线程池中重新洗牌，然后再随机选取一个线程来执行**。
+>
+> **这其实就是当前函数`time_sleep()`的功能**
+
+
+
+**至此，我们整个`time_sleep()`函数功能分析完毕**
+
+
+
+#### `time_sleep()`函数设计缺陷
+
+当前的`time_sleep()`函数在时间`tisks`内不断进行while循环，在这个过程中，线程不断地在就绪队列与执行队列中跳转，这会导致长期地占用cpu资源，也就是我们说的忙等待，我们需要完善这个函数的设计，使得起可以被唤醒（因为其调用的函数都是原子操作，无法通过普通的方式唤醒`time_sleep()`函数）
+
+
+
+### 实验设计思路
+
+```c
+/* Sleeps for approximately TICKS timer ticks.  Interrupts must
+   be turned on. */
+void
+timer_sleep (int64_t ticks)
+{
+  if (ticks <= 0)
+  {
+    return;
+  }
+  ASSERT (intr_get_level () == INTR_ON);
+  enum intr_level old_level = intr_disable ();
+  struct thread *current_thread = thread_current ();
+  current_thread->ticks_blocked = ticks;
+  thread_block ();
+  intr_set_level (old_level);
 }
 ```
 
