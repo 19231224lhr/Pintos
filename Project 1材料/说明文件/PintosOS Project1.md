@@ -10,7 +10,7 @@ Pintos是美国斯坦福大学操作系统课程的实验项目，作为一个�
 
 Pintos文件中我们主要关心src文件夹的目录结构，如下图所示：
 
-![image-20211021083404912](C:\Users\lhr4108\AppData\Roaming\Typora\typora-user-images\image-20211021083404912.png)
+![image-20211021083404912](image-20211021083404912.png)
 
 | 目录        | 主要负责功能                                                 |
 | ----------- | :----------------------------------------------------------- |
@@ -99,7 +99,7 @@ pintos --gdb -- run mytest
 
 完成这一步后，bochs打开终端调试模式
 
-![image-20211021102944325](C:\Users\lhr4108\AppData\Roaming\Typora\typora-user-images\image-20211021102944325.png)
+![image-20211021102944325](image-20211021102944325.png)
 
 2 在同一台机器上打开第二个终端，并使用`pintos gdb`调用kernel.o上的`gdb`
 
@@ -115,23 +115,25 @@ pintos-gdb kernel.o
 
 现在GDB通过本地网络连接到模拟器。您现在可以发出任何普通的GDB命令。如果发出`c`命令，模拟BIOS将控制、加载Pintos，然后Pintos将以通常的方式运行。您可以使用Ctrl+C在任意点暂停进程。
 
-> **ps**：按照教程是这么走的，但是我的电脑到第二步后输入指令之后没反应，我也不知道是怎么回事，但利用gdb调试这条路应该走不通了
+> **ps**：按照教程是这么走的，但是我的电脑到第二步后输入指令之后没反应，我也不知道是怎么回事，但利用gdb调试这条路应该走不通了：
 >
-> ![image-20211021105413121](C:\Users\lhr4108\AppData\Roaming\Typora\typora-user-images\image-20211021105413121.png)
+> ![image-20211021105413121](image-20211021105413121-16353875350511.png)
 >
 > 正常情况应该是这样的：
 >
-> ![image-20211021105710812](C:\Users\lhr4108\AppData\Roaming\Typora\typora-user-images\image-20211021105710812.png)
+> ![image-20211028101628704](image-20211028101628704.png)
 
 参考网址：https://web.stanford.edu/class/cs140/projects/pintos/pintos_10.html
 
 
 
+------
+
 
 
 在本作业中，我们将为您提供一个功能最小的线程系统。您的工作是扩展此系统的功能，以便更好地了解同步问题。
 
-您将主要在`threads`目录中进行此分配，同时在`devices`目录中进行一些工作。编译应该在`threads`目录中完成。
+**您将主要在`threads`目录中进行此分配，同时在`devices`目录中进行一些工作。编译应该在`threads`目录中完成。**
 
 ## threads部分源代码
 
@@ -577,9 +579,9 @@ thread_yield (void)
 
 
 
-> 再回到我们的主函数`time_sleep()`，我们理解了函数后面的调用之后，应该能判断出，while循环做了一件事，**那就是在时间`tisks`内，不断地执行函数`thread_yield()`，将当前线程放入线程池中重新洗牌，然后再随机选取一个线程来执行**。
+> 再回到我们的主函数`time_sleep()`，我们理解了函数后面的调用之后，应该能判断出，while循环做了一件事，**那就是在时间`tisks`内，不断地执行函数`thread_yield()`，将`当前线程`放入线程池中重新洗牌，然后再随机选取一个线程来执行**。
 >
-> **这其实就是当前函数`time_sleep()`的功能**
+> **这其实就是当前函数`time_sleep()`的功能**：`timer_sleep`就是在`ticks`时间内， 如果线程处于`running`状态就不断把他扔到就绪队列不让他执行
 
 
 
@@ -595,22 +597,182 @@ thread_yield (void)
 
 ### 实验设计思路
 
+接下来，我们来逐步分析如何优化与重构这部分代码
+
+> **实现思路**：调用`timer_sleep`的时候直接把线程**阻塞掉**，然后给线程结构体加一个成员`ticks_blocked`来**记录这个线程被sleep了多少时间**， 然后利用操作系统自身的时钟中断（每个tick会执行一次）加入对线程状态的检测， **每次检测将ticks_blocked减1, 如果减到0就唤醒这个线程**。
+
+既然原函数设计的缺点是因为其无休止的将running状态的线程（也就是它自身）放到就绪队列里导致线程的忙等待，那我们就不要让它这样做，我们利用操作系统自身的时钟中断机制来唤醒函数，并亲自将当前线程放到就绪队列中。
+
+函数修改
+
 ```c
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
-timer_sleep (int64_t ticks)
-{
-  if (ticks <= 0)
-  {
-    return;
-  }
-  ASSERT (intr_get_level () == INTR_ON);
-  enum intr_level old_level = intr_disable ();
-  struct thread *current_thread = thread_current ();
-  current_thread->ticks_blocked = ticks;
-  thread_block ();
-  intr_set_level (old_level);
+timer_sleep(int64_t ticks) {
+    // ticks小于零直接返回
+    if (ticks <= 0) {
+        return;
+    }
+    // 当前中断状态为可中断状态
+    ASSERT(intr_get_level() == INTR_ON);
+    // 禁用中断，并保存上一个中断状态，使得接下来的操作为原子操作
+    enum intr_level old_level = intr_disable();
+    // 获取当前线程起始指针位置
+    struct thread *current_thread = thread_current();
+    // 设置线程休眠时间
+    current_thread->ticks_blocked = ticks;
+    // 调用线程阻塞函数
+    thread_block ();
+    // 还原先前的中断状态，停止原子操作
+    intr_set_level (old_level);
 }
 ```
+
+这里我调用了`thread_block ()`函数
+
+```c
+/* Puts the current thread to sleep.  It will not be scheduled
+   again until awoken by thread_unblock().
+
+   This function must be called with interrupts turned off.  It
+   is usually a better idea to use one of the synchronization
+   primitives in synch.h. */
+
+void
+thread_block (void) 
+{
+  // 函数在处理内部中断
+  ASSERT (!intr_context ());
+  // 中断禁止状态
+  ASSERT (intr_get_level () == INTR_OFF);
+  // 将当前线程的状态设置为阻塞状态
+  thread_current ()->status = THREAD_BLOCKED;
+  // 安排一个新的线程执行
+  schedule ();
+}
+```
+
+> **函数功能**：将当前线程置于睡眠状态。它不会被安排再次执行，直到被函数`unblock()`唤醒。必须在禁止中断情况下调用此函数。
+
+然后我们就需要在`thread.h`文件中加上进程结构体中对于记录休眠时间的成员：
+
+```c
+/* Record the time the thread has been blocked. */
+int64_t ticks_blocked;
+```
+
+然后在线程创建的时候初始化该变量
+
+```c
+// thread_creat()
+t->ticks_blocked = 0;
+```
+
+接下来，我们需要让一开始就休眠的线程在休眠的时候每次都检查自身的`ticks`是否为零，如果为零，则唤醒该线程，因此我们需要一个让所有线程都能执行某个函数的函数，即其形式大致如下：
+
+```c
+threads_all_do(func) {
+    // all threads do
+    func();
+}
+```
+
+`thread.c`文件中正好为我们定义了这样的函数：
+
+```c
+/* Invoke function 'func' on all threads, passing along 'aux'.
+   This function must be called with interrupts off. */
+
+void
+thread_foreach (thread_action_func *func, void *aux)
+{
+  struct list_elem *e;
+
+  ASSERT (intr_get_level () == INTR_OFF);
+
+  for (e = list_begin (&all_list); e != list_end (&all_list);
+       e = list_next (e))
+    {
+      struct thread *t = list_entry (e, struct thread, allelem);
+      func (t, aux);
+    }
+}
+```
+
+> **函数功能**：在所有线程上调用函数“func”，并传递“aux”。必须在中断关闭时调用此函数。
+
+其中的`for`循环从线程的起始队列一直运行到末尾队列，以此来实现所有线程都执行的功能。
+
+因此，我们只需要向`thread_foreach()`函数传入`func`参数，即可让所有线程都执行`func`函数
+
+我们先定义一个函数，使其可以每次将`ticks--`，并唤醒`ticks == 0`的线程
+
+```c
+/* 检查阻塞线程 */
+
+void
+thread_check_blocked (struct thread *t, void *aux UNUSED)
+{
+  // 当前线程状态是已阻塞，并且ticks > 0
+  if (t->status == THREAD_BLOCKED && t->ticks_blocked > 0)
+  {
+      // ticks--
+      t->ticks_blocked--;
+      // 当ticks == 0时，唤醒线程
+      if (t->ticks_blocked == 0)
+      {
+          // 唤醒线程，thread.c文件中定义的函数，作用是唤醒线程
+          thread_unblock(t);
+      }
+  }
+}
+```
+
+**千万不要忘了在`thread.h`文件中声明该函数**
+
+```c
+// thread.h
+void thread_check_blocked (struct thread *t, void *aux UNUSED);
+```
+
+最后，在`timer.c`文件中的函数`timer_interrupt()`增加`thread_foreach()`函数即可：
+
+```c
+/* Timer interrupt handler. */
+
+static void
+timer_interrupt(struct intr_frame *args UNUSED) {
+    ticks++;
+    thread_tick();
+    thread_foreach(thread_check_blocked,NULL);
+}
+```
+
+**该函数每个时钟周期会自动执行一次。**
+
+至此，我们所需要完成的功能就已经实现了
+
+### 重要提醒
+
+项目中如果加上：
+
+```c
+// thread_creat()
+t->ticks_blocked = 0;
+```
+
+这条语句的话，Pintos系统就会报错：`Unexpected Interrupt`，去掉以后程序正常运行，但是我不知道这行代码为什么会出错，因为创建线程的时候初始化线程的`ticks_blocked`阻塞时间为0是很正常的步骤吧，大概，疑惑中。
+
+### 任务一过点情况
+
+![image-20211028101313373](image-20211028101313373.png)
+
+前五个点通过了四个点，第四个测试点因为有关于任务二优先级调度，因此在任务中先不考虑任务二的过点情况，完成。
+
+**一共修改了三个文件：`thread.h`文件，`thread.c`文件，`timer.c`文件。**
+
+具体修改文件内容可以在我们的`github`仓库地址中查看，仓库地址：https://github.com/19231224lhr/Pintos
+
+![image-20211028102553860](image-20211028102553860.png)
 
