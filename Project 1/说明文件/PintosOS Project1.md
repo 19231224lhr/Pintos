@@ -776,3 +776,93 @@ t->ticks_blocked = 0;
 
 ![image-20211028102553860](image-20211028102553860.png)
 
+
+
+## 任务二 优先级调度
+
+### 任务1	实现优先级调度
+
+在原始的代码实现中，线程的就绪队列基本采用的是**先来先服务**的调度⽅式，即先进⼊就绪队列的线程在调度时会先获得CPU，这个实验的目的是**将这种调度策略改成`优先级调度`**。
+
+即当⼀个线程被添加到就绪列表中，并且该线程的优先级高于当前正在运行的线程时，当前线程应该立即将处理器交付给新线程。类似地，当有多个线程正在等待锁、信号量或条件变量时，优先级最高的等待线程应该首先被唤醒。
+
+在Pintos中，**线程优先级范围为`0到63`**。 **较低的数字对应较低的优先级**，因此优先级 0 是最低优先级，优先级 63 是最⾼优先级。**线程创建时默认的优先级为`PRI_DEFAULT = 31`**。
+
+> 在实现优先级调度的时候，不仅仅需要考虑线程的就绪队列，**还要考虑信号量和条件变量的等待队列**。
+
+
+
+### 任务2	实现优先级捐赠
+
+在本实验中，**优先级捐赠主要是针对线程对于锁的获取的**。例如：如果`线程H`拥有较高的优先级，`线程M`拥有中等 的优先级，`线程L`拥有较低的优先级。此时若`线程H`正在等待`线程L`持有的**锁**, 且`M`⼀直在就绪队列之中，那么`线程H`将永远无法获得CPU。因此，**这个时候需要将`H`的优先级捐赠给`L`**。
+
+优先级调度的一个问题是“优先级反转”。分别考虑高、中、低优先级线程H、M和L。如果H需要等待L（例如，对于L持有的锁），并且M在就绪列表中，那么H将永远不会获得CPU，因为低优先级线程不会获得任何CPU时间。这个问题的一个部分修复方法是H在L持有锁时将其优先级“捐赠”给L，然后在L释放锁（从而H获得锁）后**召回捐赠**。
+
+<img src="image-20211028161754769.png" alt="image-20211028161754769" style="zoom:50%;" />
+
+> - ⼀个锁只能被单个线程持有，而⼀个线程却可以持有多个锁。当线程持有多个锁时，需要**将线程的优先级设置为其被捐赠的优先级中最大的**；
+> - 会出现**递归捐赠**的问题。例如当前存在⼀个⾼优先级线程H，⼀个中优先级线程M，⼀个低优先级线程L。如 果H正在申请M持有的锁，M正在申请L持有的锁，那么M和L的优先级都需要被设置为H的优先级。
+
+必须为锁实现优先级捐赠。**您不需要为其他Pintos同步构造实现优先级捐赠**。您确实需要在所有情况下实施优先级调度。
+
+最后，实现以下函数，允许线程检查和修改自己的优先级。`threads/thread.c`中提供了这些函数的框架。
+
+**`thread_set_priorit()`**函数：将当前线程的优先级设置为新线程优先级。如果当前线程不再具有最高优先级，则生成。
+
+**`thread_get_priority()`**函数：返回当前线程的优先级。如果存在优先捐赠，则返回较高的（捐赠）优先权。
+
+> 您不需要提供任何接口来允许线程直接修改其他线程的优先级。
+>
+> **优先级计划程序不会在以后的任何项目中使用**。
+
+题目内容参考网址：http://web.stanford.edu/~ouster/cgi-bin/cs140-spring20/pintos/pintos_2.html
+
+### 代码分析
+
+在任务一中已经大致了解了Pintos的线程调度策略，我们这里再次分析Pintos的线程结构：
+
+```c
+struct thread
+{
+    /* Owned by thread.c. */
+    tid_t tid;                          /* Thread identifier. */
+    enum thread_status status;          /* Thread state. */
+    char name[16];                      /* Name (for debugging purposes). */
+    uint8_t *stack;                     /* Saved stack pointer. */
+    int priority;                       /* Priority. */
+	// ......
+};
+```
+
+在线程的定义中已经有了优先级的定义，同时在`thread.h`文件中也定义了其几个状态：
+
+```c
+/* Thread priorities. */
+#define PRI_MIN 0                       /* Lowest priority. */
+#define PRI_DEFAULT 31                  /* Default priority. */
+#define PRI_MAX 63                      /* Highest priority. */
+```
+
+我们任务2.1的主要任务就是将就绪队列始终维护为一个优先级调度策略队列即可。
+
+所以，**那些函数或者操作会造成进程就绪队列的改变呢**？
+
+- `thread_unblock()`函数
+
+```c
+void
+thread_unblock (struct thread *t)
+{
+  enum intr_level old_level;
+
+  ASSERT (is_thread (t));
+
+  old_level = intr_disable ();
+  ASSERT (t->status == THREAD_BLOCKED);
+  // list_push_back()h
+  list_push_back (&ready_list, &t->elem);
+  t->status = THREAD_READY;
+  intr_set_level (old_level);
+}
+```
+
