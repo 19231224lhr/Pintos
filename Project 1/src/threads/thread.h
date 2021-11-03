@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "fixed_point.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -89,9 +90,13 @@ struct thread
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
     struct list_elem allelem;           /* List element for all threads list. */
-
+    int base_priority;                  /*基本优先级. */
+    struct list locks;                  /* 线程持有的锁。 */
+    struct lock *lock_waiting;          /* 线程正在等待的锁。*/
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
+    int nice;                           /* 线程的友好程度 */
+    fixed_t recent_cpu;                 /* 当前占有的CPU */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -112,7 +117,11 @@ extern bool thread_mlfqs;
 
 void thread_init (void);
 void thread_start (void);
-
+bool thread_cmp_priority (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+void thread_hold_the_lock(struct lock *lock);
+void thread_donate_priority (struct thread *t);
+void thread_remove_lock (struct lock *lock);
+void thread_update_priority (struct thread *t);
 void thread_tick (void);
 void thread_print_stats (void);
 
