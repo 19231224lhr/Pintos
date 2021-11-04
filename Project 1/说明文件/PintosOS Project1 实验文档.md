@@ -1,9 +1,3 @@
-
-
-
-
-
-
 # PintosOS Project1 实验文档
 
 ## 任务一	唤醒时钟
@@ -635,7 +629,7 @@ t->ticks_blocked = 0;
 
 thread类定义了：
 
-```
+```c
 最低优先级为0
 public final static int MIN_PRIORITY = 0;
 
@@ -666,7 +660,7 @@ public final static int MAX_PRIORITY = 63;
 
 对于情况一，我们把源码呈上：
 
-```
+```c
 thread_init (void) 
 {
   ASSERT (intr_get_level () == INTR_OFF);//中断函数，判断是否中断，中断则报错（assert为断言函数）
@@ -684,7 +678,7 @@ thread_init (void)
 
 ```
 
-```
+```c
 thread_unblock (struct thread *t) 
 {
   enum intr_level old_level;//这句话接下来会一直用，当成格式
@@ -699,7 +693,7 @@ thread_unblock (struct thread *t)
 }
 ```
 
-```
+```c
 thread_yield (void) 
 {
   struct thread *cur = thread_current ();
@@ -736,7 +730,7 @@ thread_yield (void)
 
 在其中找找list关于队列管理的函数：（这里我们就不找那些判断list成分的函数了，也不关心普通插入）
 
-```
+```c
 /* 根据LESS给定的辅助数据AUX对LIST进行排序，自然迭代归并排序，运行时间为O(nlgn)，O(1) LIST中元素个数的空格。 */
 list_sort (struct list *list, list_less_func *less, void *aux)
 {
@@ -822,13 +816,13 @@ list_unique (struct list *list, struct list *duplicates,
 
 直接修改thread_unblock函数把list_push_back改成：
 
-```
+```c
 list_insert_ordered (&ready_list, &t->elem, (list_less_func *) &thread_cmp_priority, NULL);
 ```
 
 然后实现一下比较函数thread_cmp_priority（提供控制数据）：
 
-```
+```c
  /* priority compare function. */
  bool
  thread_cmp_priority (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
@@ -840,19 +834,11 @@ list_insert_ordered (&ready_list, &t->elem, (list_less_func *) &thread_cmp_prior
 
 然后对thread_yield和thread_init里的list_push_back作同样的修改：
 
-init_thread:
-
-```
-
-```
-
 thread_yield:
 
-```
+```c
 list_insert_ordered (&ready_list, &cur->elem, (list_less_func *) &thread_cmp_priority, NULL);
 ```
-
-
 
 （具体参数含义暂未研究）
 
@@ -864,7 +850,7 @@ alarm_priority这个测试pass了！
 
 然后思考人生，这样实现仅仅是队列排序：
 
-直接TDD吧， 测试驱动开发， 来看测试做了什么：（时间紧任务重，而且我还菜，属实下策）
+直接TDD吧，来看测试做了什么：
 
 （这边注意default是默认）
 
@@ -976,13 +962,11 @@ acquire1_thread_func (void *lock_)
 
 看信号量：这里虽然测试文件里面有锁和信号量，主要问题还是信号量，相当于是代码写好了释放锁（我是这么想的，锁本来就是按照信号量实现的），V操作唤醒的顺序也要是优先级高的先，可见 ***信号量的等待队列是优先级队列***
 
-priority-donate-lower这个没太看懂，然后求助了一下：
+`priority-donate-lower`这个没太看懂，然后求助了一下：
 
 ```c
  thread_set_priority
 ```
-
-
 
 这个在这里被调用了，也就是说，被捐献的线程在过程中被改变了优先级（新问题），要保证逻辑正确。
 
@@ -1024,8 +1008,9 @@ priority-donate-chain，这个比较难看（lock_pair是包含两个lock指针�
 
 修改代码如下：
 
-修改lock_acquire函数：
+修改`lock_acquire`函数：
 
+```c
 void
 lock_acquire (struct lock *lock)
 {
@@ -1035,9 +1020,12 @@ lock_acquire (struct lock *lock)
 
   sema_down (&lock->semaphore);
   lock->holder = thread_current ();//这个就是不符合要求的buddy
-}搞成：——————>
-
+}
 ```
+
+修改为：
+
+```c
 lock_acquire (struct lock *lock)
   {
     struct thread *current_thread = thread_current ();
