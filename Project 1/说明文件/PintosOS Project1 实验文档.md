@@ -40,8 +40,6 @@ timer_sleep (int64_t ticks)
 
 函数传入一个int类型的时间片，进入代码后，第一行定义了一个int类型的start变量，并将其赋值为`timer_ticks()`函数的返回值。
 
-
-
 #### `timer_ticks()`函数
 
 ```c
@@ -61,8 +59,6 @@ timer_ticks (void)
 
 函数中出现了一个`enum intr_level`，我们找出其定义
 
-
-
 #### `enum intr_level`
 
 通过Clion的全文搜索功能，我们可以发现`enum intr_level`定义在`threads/interrupt.h`文件中
@@ -78,8 +74,6 @@ enum intr_level
 ```
 
 根据注释，我们能推断出`enum intr_level`就是代表了当前能否被中断的一个数据格式，其中包含了能中断或者不能被中断
-
-
 
 #### `intr_disable()`函数
 
@@ -113,8 +107,6 @@ asm volatile ("cli" : : : "memory");
 注释：通过清除中断标志来禁用中断，结合语义，这其实是在C语言中调用了汇编指令来实现的禁用中断指令，具体实现细节我们不需要去了解，我们只需要知道这个函数可以禁用中断即可
 
 接下来，我们继续寻找`intr_get_level()`函数
-
-
 
 #### `intr_get_level()`函数
 
@@ -176,8 +168,6 @@ static int64_t ticks;
 
 这之后`timer_ticks()`函数又调用了`intr_set_level()`函数，我们来找出该函数的定义
 
-
-
 #### `intr_set_level()`函数
 
 函数位置：`threads/interrupt.c`
@@ -198,8 +188,6 @@ intr_set_level (enum intr_level level)
 因为`INTR_ON`在`enum intr_level`中就已经定义过为enabled中断，所以如果之前的中断（`level`）是允许中断的 ，就调用`intr_enable()`函数，否则就调用`intr_disable()`函数
 
 那么类似于我们之前讨论的`intr_disable()`函数，`intr_enable()`函数的定义也类似
-
-
 
 #### `intr_enable()`函数
 
@@ -233,8 +221,6 @@ intr_enable (void)
 ASSERT (!intr_context ());
 ```
 
-
-
 #### `intr_context()`函数
 
 函数位置：`threads/interrupt.c`
@@ -262,11 +248,7 @@ static bool in_external_intr;   /* Are we processing an external interrupt? */
 
 因此，只有在我们当前没有正在处理外部中断时，断言才能继续向下运行
 
-
-
 因此，`intr_set_level()`函数的作用就是判断之前的中断类型，如果是允许中断，则调用`intr_enable()`函数启用中断并继续返回上一个中断状态，否则调用`intr_disable()`函数
-
-
 
 **在返回了总中断次数`t`后，函数`timer_ticks()`执行完毕**
 
@@ -290,8 +272,6 @@ int64_t t = ticks;
 
 不会被其他进程打断
 
-
-
 **至此，函数`timer_sleep()`第一行语句执行完毕：**
 
 ```c
@@ -314,8 +294,6 @@ while (timer_elapsed (start) < ticks)
 ```
 
 就可能因为是死循环而且无法被打断，导致程序无法跳出`timer_sleep()`函数
-
-
 
 接下来，我们就来看看while循环中的函数`timer_elapsed()`
 
@@ -587,17 +565,7 @@ t->ticks_blocked = 0;
 
 #### 子任务1 实现优先级调度
 
-在原始的代码实现中，线程的就绪队列基本采⽤的是先来先服务的调度⽅式，即先进⼊就绪队列的线程在调度时会
-
-先获得CPU，这个实验的⽬的是将这种调度策略改成优先级调度。即当⼀个线程被添加到就绪列表中，并且该线程
-
-的优先级⾼于当前正在运⾏的线程时，当前线程应该⽴即将处理器交付给新线程。类似地，当有多个线程正在等待
-
-锁、信号量或条件变量时，优先级最⾼的等待线程应该⾸先被唤醒。
-
-在Pintos中，线程优先级范围为0到63。 较低的数字对应较低的优先级，因此优先级 0 是最低优先级，优先级 63
-
-是最⾼优先级。 线程创建时默认的优先级为PRI_DEFAULT = 31。
+在原始的代码实现中，线程的就绪队列基本采⽤的是先来先服务的调度⽅式，即先进⼊就绪队列的线程在调度时会先获得CPU，这个实验的⽬的是将这种调度策略改成优先级调度。即当⼀个线程被添加到就绪列表中，并且该线程的优先级⾼于当前正在运⾏的线程时，当前线程应该⽴即将处理器交付给新线程。类似地，当有多个线程正在等待锁、信号量或条件变量时，优先级最⾼的等待线程应该⾸先被唤醒。在Pintos中，线程优先级范围为0到63。 较低的数字对应较低的优先级，因此优先级 0 是最低优先级，优先级 63是最⾼优先级。 线程创建时默认的优先级为PRI_DEFAULT = 31。
 
 **注意点：**
 
@@ -609,21 +577,13 @@ t->ticks_blocked = 0;
 
 **优先级捐赠概念：**
 
-在本实验中，优先级捐赠主要是针对线程对于锁的获取的。例如：如果线程H拥有较⾼的优先级，线程M拥有中等
-
-的优先级，线程L拥有较低的优先级。此时若线程H正在等待L持有的锁, 且M⼀直在就绪队列之中，那么线程H将永
-
-远⽆法获得CPU。因此，这个时候需要将H的优先级捐赠给L。
+在本实验中，优先级捐赠主要是针对线程对于锁的获取的。例如：如果线程H拥有较⾼的优先级，线程M拥有中等的优先级，线程L拥有较低的优先级。此时若线程H正在等待L持有的锁, 且M⼀直在就绪队列之中，那么线程H将永远⽆法获得CPU。因此，这个时候需要将H的优先级捐赠给L。
 
 **难点：**
 
-1.⼀个锁只能被单个线程持有，⽽⼀个线程却可以持有多个锁。当线程持有多个锁时，需要将线程的优先级设置
+1.⼀个锁只能被单个线程持有，⽽⼀个线程却可以持有多个锁。当线程持有多个锁时，需要将线程的优先级设置为其被捐赠的优先级中最⼤的。
 
-为其被捐赠的优先级中最⼤的。
-
-2.会出现递归捐赠的问题。例如当前存在⼀个⾼优先级线程H，⼀个中优先级线程M，⼀个低优先级线程L。如
-
-果H正在申请M持有的锁，M正在申请L持有的锁，那么M和L的优先级都需要被设置为H的优先级。
+2.会出现递归捐赠的问题。例如当前存在⼀个⾼优先级线程H，⼀个中优先级线程M，⼀个低优先级线程L。如果H正在申请M持有的锁，M正在申请L持有的锁，那么M和L的优先级都需要被设置为H的优先级。
 
 
 
@@ -635,7 +595,7 @@ t->ticks_blocked = 0;
 
 thread类定义了：
 
-```
+```c
 最低优先级为0
 public final static int MIN_PRIORITY = 0;
 
@@ -666,7 +626,7 @@ public final static int MAX_PRIORITY = 63;
 
 对于情况一，我们把源码呈上：
 
-```
+```c
 thread_init (void) 
 {
   ASSERT (intr_get_level () == INTR_OFF);//中断函数，判断是否中断，中断则报错（assert为断言函数）
@@ -684,7 +644,7 @@ thread_init (void)
 
 ```
 
-```
+```c
 thread_unblock (struct thread *t) 
 {
   enum intr_level old_level;//这句话接下来会一直用，当成格式
@@ -699,7 +659,7 @@ thread_unblock (struct thread *t)
 }
 ```
 
-```
+```c
 thread_yield (void) 
 {
   struct thread *cur = thread_current ();
@@ -736,7 +696,7 @@ thread_yield (void)
 
 在其中找找list关于队列管理的函数：（这里我们就不找那些判断list成分的函数了，也不关心普通插入）
 
-```
+```c
 /* 根据LESS给定的辅助数据AUX对LIST进行排序，自然迭代归并排序，运行时间为O(nlgn)，O(1) LIST中元素个数的空格。 */
 list_sort (struct list *list, list_less_func *less, void *aux)
 {
@@ -822,13 +782,13 @@ list_unique (struct list *list, struct list *duplicates,
 
 直接修改thread_unblock函数把list_push_back改成：
 
-```
+```c
 list_insert_ordered (&ready_list, &t->elem, (list_less_func *) &thread_cmp_priority, NULL);
 ```
 
 然后实现一下比较函数thread_cmp_priority（提供控制数据）：
 
-```
+```c
  /* priority compare function. */
  bool
  thread_cmp_priority (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
@@ -848,7 +808,7 @@ init_thread:
 
 thread_yield:
 
-```
+```c
 list_insert_ordered (&ready_list, &cur->elem, (list_less_func *) &thread_cmp_priority, NULL);
 ```
 
@@ -888,7 +848,7 @@ alarm_priority这个测试pass了！
 
 那么结论就简单了：在设置新的优先级就必须要重新排线程的顺序（yield）
 
-```
+```c
 void
 thread_set_priority (int new_priority)
  {
@@ -901,7 +861,7 @@ thread_set_priority (int new_priority)
 
 在thread_create最后把创建的线程unblock了之后加上这些代码：
 
-```
+```c
  if (thread_current ()->priority < priority)
    {
      thread_yield ();
@@ -922,7 +882,7 @@ thread_set_priority (int new_priority)
 
 先创建了一个默认优先级的线程，建立一个锁，之后又相继创建1,2，优先级分别高了1,2，并且会检查当前运行的线程的优先级，在这里是建立新的线程因此之前用的抢占式调度就会让acquire1_thread_func发生，
 
-```
+```c
 acquire1_thread_func (void *lock_) 
  {
    struct lock *lock = lock_;
@@ -936,7 +896,7 @@ acquire1_thread_func (void *lock_)
 
 先体会一下lock_acquire到底做了什么（又被提醒了……）
 
-```
+```c
    sema_down (&lock->semaphore);
   lock->holder = thread_current ();
 ```
@@ -1006,7 +966,7 @@ priority-donate-chain，这个比较难看（lock_pair是包含两个lock指针�
 
 简要总结一下：
 
-```
+```c
 1.  在一个线程获取一个锁的时候， 如果拥有这个锁的线程优先级比自己低就提高它的优先级，并且如果这个锁还被别的锁锁着， 将会递归地捐赠优先级， 然后在这个线程释放掉这个锁之后恢复未捐赠逻辑下的优先级。
 
 2. 如果一个线程被多个线程捐赠， 维持当前优先级为捐赠优先级中的最大值（acquire和release之时）。
@@ -1037,7 +997,7 @@ lock_acquire (struct lock *lock)
   lock->holder = thread_current ();//这个就是不符合要求的buddy
 }搞成：——————>
 
-```
+```c
 lock_acquire (struct lock *lock)
   {
     struct thread *current_thread = thread_current ();
@@ -1079,7 +1039,7 @@ lock_acquire (struct lock *lock)
  }
 ```
 
-```
+```c
 /* 捐献当前的优先级. */
   void thread_donate_priority (struct thread *t)
   {
@@ -1163,7 +1123,7 @@ void
 
  然后在init_thread中加入初始化：
 
-```
+```c
    t->base_priority = priority;
    list_init (&t->locks);
    t->lock_waiting = NULL;
@@ -1213,7 +1173,7 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
 
 明显不是优先队列
 
-```
+```c
   void
   cond_signal (struct condition *cond, struct lock *lock UNUSED)
   {
@@ -1289,7 +1249,7 @@ sema_down同样更改list_push_back的使用（前面已经提到）
 
 ### 过点情况
 
-![QQ截图20211103161933](QQ截图20211103161933.jpg)
+![QQ图片20211104115844](QQ图片20211104115844.png)
 
 
 
@@ -1297,41 +1257,29 @@ sema_down同样更改list_push_back的使用（前面已经提到）
 
 ### 任务要求
 
-在优先级调度策略之中，⾼优先级的进程永远抢占着CPU，⽽低优先级线程能获得的时间⾮常少。在本实验中，我
+在优先级调度策略之中，⾼优先级的进程永远抢占着CPU，⽽低优先级线程能获得的时间⾮常少。在本实验中，我们会实现更加复杂的调度器，该实验所实现的调度器会⾃动维护线程的优先级。同样的，在任何给定的时间，调度程序从最⾼优先级的⾮空队列中选择⼀个线程。本实验需要弄清楚以下⼏个概念：
 
-们会实现更加复杂的调度器，该实验所实现的调度器会⾃动维护线程的优先级。同样的，在任何给定的时间，调度
+1. ready_threads：代表当前正在处于运⾏态和就绪态的线程的数量。
+2. load_avg：代表对过去⼀秒钟内准备运⾏的线程的数量的估计，其初始值被设置为0，每⼀秒（100个ticks），load_avg会进⾏更新。
 
-程序从最⾼优先级的⾮空队列中选择⼀个线程。本实验需要弄清楚以下⼏个概念：
+![QQ截图20211104120808](QQ截图20211104120808.jpg)
 
-1. ready_threads：代表当前正在处于运⾏态和就绪态的线程的数量
+3. recent_cpu：每⼀个线程都拥有的变量，反应该线程获得cpu的多少。每⼀个ticks，正在运⾏的线程的recent_cpu会增加1。每⼀秒(100个ticks)，所有的线程的recent_cpu会进⾏更新。
 
-2. load_avg：代表对过去⼀秒钟内准备运⾏的线程的数量的估计，其初始值被设置为0，每⼀秒（100个
+![QQ截图20211104120813](QQ截图20211104120813.jpg)
 
-ticks），load_avg会进⾏更新。
-
-3. recent_cpu：每⼀个线程都拥有的变量，反应该线程获得cpu的多少。每⼀个ticks，正在运⾏的线程的
-
-recent_cpu会增加1。每⼀秒(100个ticks)，所有的线程的recent_cpu会进⾏更新。
-
-4. nice：代表线程对其他线程的友好程度，取值范围为0到20，nice值为0不会影响该线程的优先级，nice值越
-
-⼤，该线程对其他线程越友好，即该线程的优先级越低，线程创建时初始nice值为0。
+4. nice：代表线程对其他线程的友好程度，取值范围为0到20，nice值为0不会影响该线程的优先级，nice值越大，该线程对其他线程越友好，即该线程的优先级越低，线程创建时初始nice值为0。
 
 5. priority：线程的优先级，每四个ticks，线程的优先级会进⾏更新。
 
+![QQ截图20211104120818](QQ截图20211104120818.jpg)
+
 **难点：**
 
-1. 在pintos中，存在⼀个thread_mlfqs的布尔量控制⾼级调度，当其值为true时，使⽤⾼级调度，当值为false
-
-时，使⽤优先级调度。⾼级调度和优先级调度存在少部分冲突，需要特殊判断。
-
+1. 在pintos中，存在⼀个thread_mlfqs的布尔量控制⾼级调度，当其值为true时，使⽤⾼级调度，当值为false时，使⽤优先级调度。⾼级调度和优先级调度存在少部分冲突，需要特殊判断。
 2. 如果前两个任务实现的时间复杂度过⾼，会影响该任务的测试。
-
 3. 使⽤公式计算的优先级可能超出pintos设定的优先级范围(0-63)
-
-4. 在本实验之前请各位确保已经阅读任务三详细⽂档，本实验中涉及到浮点运算的部分都需要使⽤该⽂档中所提
-
-及到的⽅法。
+4. 在本实验之前请阅读任务三详细⽂档，本实验中涉及到浮点运算的部分都需要使⽤该⽂档中所提及到的⽅法。
 
 
 
@@ -1342,7 +1290,7 @@ recent_cpu会增加1。每⼀秒(100个ticks)，所有的线程的recent_cpu会�
 ```c
 Convert n to fixed point:	n * f
 Convert x to integer (rounding toward zero):	x / f
-(x - f / 2) / f if x <= 0.
+Convert x to integer (rounding to nearest):    (x + f / 2) / f if x >= 0,   (x - f / 2) / f if x <= 0.
 Add x and y:	x + y
 Subtract y from x:	x - y
 Add x and n:	x + n * f
@@ -1383,7 +1331,7 @@ typedef int fixed_t;
 #define FP_DIV(A,B) ((fixed_t)((((int64_t) A) << FP_SHIFT_AMOUNT) / B))
 //fp向整数转换
 #define FP_INT_PART(A) (A >> FP_SHIFT_AMOUNT)
-/* Get rounded integer of a fixed-point value. */
+//四舍五入
 #define FP_ROUND(A) (A >= 0 ? ((A + (1 << (FP_SHIFT_AMOUNT - 1))) >> FP_SHIFT_AMOUNT) \
         : ((A - (1 << (FP_SHIFT_AMOUNT - 1))) >> FP_SHIFT_AMOUNT))
 
