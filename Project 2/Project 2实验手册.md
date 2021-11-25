@@ -109,9 +109,9 @@
 
 #### 系统调用是什么？
 
-在 Pintos 中，用户程序调用整数 $0x30进行系统调用，此时用户就会把没有权限干的活交给系统调用去干，系统调用的栈指针就是esp，返回值是eax。**我们需要干的事说白了就是根据esp指向栈的参数内容，完成系统调用对应的功能，最后把返回值放到eax里。**
+在 Pintos 中，用户程序调用整数 $0x30进行系统调用，此时用户就会把没有权限干的活交给系统调用去干，系统调用的栈指针就是`esp`，返回值是`eax`。**我们需要干的事说白了就是根据`esp`指向栈的参数内容，完成系统调用对应的功能，最后把返回值放到`eax`里。**
 
-#### judge_ptr()
+#### `judge_ptr()`
 
 根据Pintos文档描述
 
@@ -127,5 +127,177 @@
 
 第二种方法是只检查用户指针是否指向下方`PHYS_BASE`，然后取消引用它。无效的用户指针将导致“页面错误”，你可以通过修改代码的处理`page_fault()`在 `userprog / exception.c`。这种技术通常更快，因为它利用了处理器的`MMU`，所以它往往用于实际内核（包括`Linux`）。
 
-<img src="Project 2实验手册.assets/image-20211125004412847.png" alt="image-20211125004412847" style="zoom:67%;" /><img src="Project 2实验手册.assets/image-20211125004547119.png" alt="image-20211125004547119" style="zoom:67%;" />
+如何判断此时指针指向的是属于用户的内存还是内核的内存呢？实验手册上给出了我们关于内存的介绍
+
+<img src="Project 2实验手册.assets/image-20211125004412847.png" alt="image-20211125004412847" style="zoom:67%;" />
+
+下表显示了在**用户程序开始之前**堆栈和相关寄存器的状态，假设`PHYS_BASE`为0xc000000：
+
+在本例中，堆栈指针将初始化为0xbfffffcc。
+
+| Address      | Name           | Data         | Type          |
+| ------------ | -------------- | ------------ | ------------- |
+| `0xbffffffc` | `argv[3][...]` | bar\0        | `char[4]`     |
+| `0xbffffff8` | `argv[2][...]` | foo\0        | `char[4]`     |
+| `0xbffffff5` | `argv[1][...]` | -l\0         | `char[3]`     |
+| `0xbfffffed` | `argv[0][...]` | /bin/ls\0    | `char[8]`     |
+| `0xbfffffec` | word-align     | 0            | `uint8_t`     |
+| `0xbfffffe8` | `argv[4]`      | `0`          | `char *`      |
+| `0xbfffffe4` | `argv[3]`      | `0xbffffffc` | `char *`      |
+| `0xbfffffe0` | `argv[2]`      | `0xbffffff8` | `char *`      |
+| `0xbfffffdc` | `argv[1]`      | `0xbffffff5` | `char *`      |
+| `0xbfffffd8` | `argv[0]`      | `0xbfffffed` | `char *`      |
+| `0xbfffffd4` | `argv`         | `0xbfffffd8` | `char **`     |
+| `0xbfffffd0` | `argc`         | 4            | `int`         |
+| `0xbfffffcc` | return address | 0            | `void (*) ()` |
+
+如上所示，**您的代码应该从用户虚拟地址空间的最顶端开始堆栈**，在虚拟地址`PHYS_BASE`（在`threads/vaddr.h`中定义）下方的页面中。
+
+因此，我们不仅需要检测指针指向的是用户存储空间还是内核存储空间，我们还需要判断当前指针是否有可能指向的是内核空间，将指针加4，如果加4后指向的地址属于内核存储空间（加4的原因是因为Type char[4]），则应该报错。
+
+在`userprog/syscall.c`中定义函数`judge_ptr()`
+
+**`judge_pointer()`**
+
+```c
+void * 
+judge_pointer(const void *vaddr)
+{ 
+  void *ptr = pagedir_get_page (thread_current()->pagedir, vaddr);
+  /* 判断是否属于用户地址空间，空间是否已经被映射（有效性） */
+  if (!is_user_vaddr(vaddr) || ptr == NULL)
+  {
+    // 设置线程状态值为-1，表示线程错误
+    thread_current()->st_exit = -1;
+    // 线程退出
+  	thread_exit ();
+  }
+  /* 广度范围上的判断 */
+  uint8_t *check_byteptr = (uint8_t *) vaddr;
+  // 注意，最多加到3，因为4的时候已经跳出了一个内存单位
+  for (uint8_t i = 0; i < 4; i++) 
+  {
+    // 判断辅助函数
+    if (get_user(check_byteptr + i) == -1)
+    {
+    thread_current()->st_exit = -1;
+  	thread_exit ();
+    }
+  }
+  return ptr;
+}
+```
+
+> 调用的相关函数
+
+**`is_user_vaddr()`**
+
+```c
+/* Returns true if VADDR is a user virtual address. */
+static inline bool
+is_user_vaddr (const void *vaddr) 
+{
+  return vaddr < PHYS_BASE;
+}
+```
+
+返回传入的地址指针是否指向的是用户虚拟空间
+
+判断的方法也很简单，只要指针值小于定义的物理地址范围，就属于用户地址空间，返回`false`，否则返回`true`
+
+**`pagedir_get_page()`**
+
+```c
+/* Looks up the physical address that corresponds to user virtual
+   address UADDR in PD.  Returns the kernel virtual address
+   corresponding to that physical address, or a null pointer if
+   UADDR is unmapped. */
+void *
+pagedir_get_page (uint32_t *pd, const void *uaddr) 
+{
+  uint32_t *pte;
+
+  ASSERT (is_user_vaddr (uaddr));
+  
+  pte = lookup_page (pd, uaddr, false);
+  if (pte != NULL && (*pte & PTE_P) != 0)
+    return pte_get_page (*pte) + pg_ofs (uaddr);
+  else
+    return NULL;
+}
+```
+
+查找与PD中的用户虚拟地址UADDR相对应的物理地址。返回与该物理地址对应的内核虚拟地址，如果UADDR未映射，则返回空指针
+
+**`get_user()`**
+
+实验手册中给了我们辅助函数的定义
+
+<img src="Project 2实验手册.assets/image-20211125085859714.png" alt="image-20211125085859714" style="zoom:67%;" />
+
+```c
+/* Reads a byte at user virtual address UADDR.
+   UADDR must be below PHYS_BASE.
+   Returns the byte value if successful, -1 if a segfault
+   occurred. */
+static int
+get_user (const uint8_t *uaddr)
+{
+  int result;
+  asm ("movl $1f, %0; movzbl %1, %0; 1:"
+       : "=&a" (result) : "m" (*uaddr));
+  return result;
+}
+```
+
+读取用户虚拟地址UADDR处的字节。UADDR必须低于PHYS_BASE。如果成功，则返回字节值；如果发生segfault，则返回-1。
+
+这个函数我们也需要定义在`syscall.c`文件中，因为我们需要+4来判断用户调用的指针指向的虚拟地址是否指向了内核存储空间。
+
+#### `page_fault()`
+
+我们不仅需要主动判断指针指向内存错误，也需要在内存错误处理函数中处理这种错误
+
+> 这些函数中的每一个都假设用户地址已被验证为低于PHYS_BASE。他们还假设您已经修改了page_fault（），因此内核中的页面错误只会将`eax`设置为0xffffffff，并将其以前的值复制到`eip`中。
+
+在`execption.c`文件中
+
+```c
+static void
+page_fault (struct intr_frame *f) 
+{
+  bool not_present;  /* True: not-present page, false: writing r/o page. */
+  bool write;        /* True: access was write, false: access was read. */
+  bool user;         /* True: access by user, false: access by kernel. */
+  void *fault_addr;  /* Fault address. */
+
+  asm ("movl %%cr2, %0" : "=r" (fault_addr));
+
+  intr_enable ();
+
+  /* Count page faults. */
+  page_fault_cnt++;
+
+  /* Determine cause. */
+  not_present = (f->error_code & PF_P) == 0;
+  write = (f->error_code & PF_W) != 0;
+  user = (f->error_code & PF_U) != 0;
+    
+  // 新增的代码
+  // 发生错误，cpu返回-1，退出程序
+  if (!user)
+  {
+     f->eip = f->eax;//eip:寄存器存放下一个CPU指令存放的内存地址 EAX:返回值。bshd
+     f->eax = -1;
+     return;
+  }
+
+  printf ("Page fault at %p: %s error %s page in %s context.\n",
+          fault_addr,
+          not_present ? "not present" : "rights violation",
+          write ? "writing" : "reading",
+          user ? "user" : "kernel");
+  kill (f);
+}
+```
 
