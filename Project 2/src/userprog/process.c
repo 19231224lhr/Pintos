@@ -138,10 +138,59 @@ push_argument(void **esp, int argc, int argv[]){
 
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
+//int
+//process_wait (tid_t child_tid UNUSED)
+//{
+//  return -1;
+//}
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid UNUSED)
 {
-  return -1;
+    // 第一步，找出指定child_tid的子进程
+    // 所有子进程的列表，注意，类型为list
+    struct list *allchilds = &thread_current()->childs;
+    // 定义一个子进程指针，注意，类型为list_elem
+    struct list_elem *child_ptr;
+    // 取出第一个子进程
+    child_ptr = list_begin (allchilds);
+    // 定义一个子进程指针，注意，类型为child，我们之所以要使用list和list_elem类型，就是因为Pintos中对这种数据类型提供了方便的遍历方法，因此，我们需要用真正的子进程数据格式child来接收遍历出来的list_elem子进程类型
+    struct child *child_ptr2 = NULL;
+    // 开始遍历
+    while (child_ptr != list_end (allchilds))
+    {
+        // 根据list_elem返回包含list_elem的结构体child，我们通过这种巧妙地转变实现对子进程地遍历查找
+        child_ptr2 = list_entry (child_elem_ptr, struct child, child_elem);
+        // 判断是不是我们要找地子进程，通过pid来判断
+        if (child_ptr2->tid == child_tid)
+        {
+            // 判断当前进程是否已经被wait
+            if (child_ptr2->iswait == false)
+            {
+                // 如果没有被wait，则将其iswait属性状态改为true，表示该进程已经被wait了
+                child_ptr2->iswait = true;
+                // 调用sema_down()函数阻塞子进程
+                sema_down (&child_ptr2->sema);
+                // 找到目标函数后，直接退出while循环即可
+                break;
+            }
+            // 当前进程已经被wait，根据实验要求，返回-1
+            else
+            {
+                return -1;
+            }
+        }
+        // 没有找到子进程，子进程指针指向所有子进程列表中地下一个子进程，实现方式是链表
+        child_ptr = list_next (child_ptr);
+    }
+    // 如果直到找完整个所有子进程列表都还没有找到目标tid地子进程，判断条件是当前子进程指针是否等于所有子进程列表中地最后一个子进程
+    if (child_ptr == list_end (allchilds)) {
+        // 找不到目标tid子进程，函数返回-1
+        return -1;
+    }
+    // 在所有子进程列表中删除目标tid子进程
+    list_remove (child_ptr);
+    // 返回子进程地退出状态值
+    return child_ptr2->exit_status_child;
 }
 
 /* Free the current process's resources. */

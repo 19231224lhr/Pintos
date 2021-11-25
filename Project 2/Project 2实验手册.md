@@ -445,6 +445,8 @@ syscall_handler (struct intr_frame *f UNUSED)
   }
   // 上述判断都通过后，可以执行系统调用函数，f为系统调用函数相关参数
   syscallArray[type](f);
+  //printf ("system call!\n");
+  //thread_exit ();
 }
 ```
 
@@ -495,20 +497,399 @@ sys_halt (struct intr_frame* f)
 > 终止当前用户程序，将状态返回内核。如果进程的父进程等待它（见下文），则将返回此状态。通常，状态为0表示成功，非零值表示错误。
 
 ```c
-void 
-sys_exit (struct intr_frame* f)
-{
-  uint32_t *user_ptr = f->esp;
-  // ptr里指向系统调用函数名，ptr + 1里指向系统调用第一个参数
-  judge_pointer (user_ptr + 1);
-  // 指针移动，指向第一个参数
-  *user_ptr++;
-  // 第一个参数保存了int status，将其保存在进程状态中
-  thread_current()->st_exit = *user_ptr;
-  // 进程退出
-  thread_exit ();
+void
+sys_exit(struct intr_frame *f) {
+    uint32_t *ptr = f->esp;
+    // ptr里指向系统调用函数名，ptr + 1里指向系统调用第一个参数
+    // 也可以用f->esp + 4来表示ptr指向下一位
+    judge_pointer(ptr + 1);
+    // 指针移动，指向第一个参数
+    *ptr++;
+    // 第一个参数保存了int status，将其保存在进程状态中
+    thread_current()->st_exit = *ptr;
+    // 进程退出
+    thread_exit();
 }
 ```
 
 **不要忘记移动指针**。
+
+#### `exec()`
+
+> `pid_t exec (const char *cmd_line)`
+>
+> 运行名称在`cmd_line`中给定的可执行文件，传递任何给定参数，**并返回新进程的程序id（pid）**。如果程序由于任何原因无法加载或运行，**则必须返回pid-1**，否则该pid不应是有效的pid。因此，在知道子进程是否成功加载其可执行文件之前，**父进程无法从exec返回**。您必须使用适当的同步来确保这一点。
+
+是不是有点熟悉？没错，这个函数模拟的功能实际上就是`Linux`中的`exec`函数族的功能，只不过传递的参数类型不一样。
+
+调用其他函数替代子进程，这个函数功能我们在Project 1中也用到过
+
+```c
+// process.c
+
+/* Starts a new thread running a user program loaded from
+   FILENAME.  The new thread may be scheduled (and may even exit)
+   before process_execute() returns.  Returns the new process's
+   thread id, or TID_ERROR if the thread cannot be created. */
+tid_t
+process_execute (const char *file_name) 
+{
+  char *fn_copy;
+  tid_t tid;
+
+  /* Make a copy of FILE_NAME.
+     Otherwise there's a race between the caller and load(). */
+  fn_copy = palloc_get_page (0);
+  if (fn_copy == NULL)
+    return TID_ERROR;
+  strlcpy (fn_copy, file_name, PGSIZE);
+
+  /* Create a new thread to execute FILE_NAME. */
+  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  if (tid == TID_ERROR)
+    palloc_free_page (fn_copy); 
+  return tid;
+}
+```
+
+实际上就是复制了一份必要的参数，创建一个新的进程来执行指定的功能
+
+因此，我们只需要调用这个函数就可以了，但是也要检测必要参数的正确性
+
+```c
+void 
+sys_exec (struct intr_frame* f)
+{
+  uint32_t *ptr = f->esp;
+  // ptr中存放的是系统调用函数名称，ptr+1中存放的是系统调用函数参数*cmd_line
+  judge_pointer (ptr + 1);
+  // 重点：参数需要检查，但是参数本身又是一个指针，指向了存放调用函数需要的参数地址，我们也需要检查这个指针指向的地址是否正确
+  judge_pointer (*(ptr++));
+  // 调用函数process_execute()，函数返回值是进程pid，函数返回值存放在寄存器eax中
+  f->eax = process_execute((char*)* ptr);
+}
+```
+
+#### `wait()`
+
+> `int wait (pid_t pid)`
+>
+> 等待子进程pid并检索子进程的退出状态。
+>
+> 如果pid仍处于活动状态，则等待它终止。然后，返回pid传递给exit的状态。如果pid没有调用exit（），但被内核终止（例如，由于异常而终止），那么wait（pid）必须返回-1。父进程等待在父进程调用wait时已经终止的子进程是完全合法的，但是内核仍然必须允许父进程检索其子进程的退出状态，或者知道子进程已被内核终止。
+>
+> **如果以下任一条件为真，wait必须失败并立即返回-1**：
+>
+> - pid不引用调用进程的直接子进程。当且仅当调用进程从对exec的成功调用中接收到pid作为返回值时，pid才是调用进程的直接子进程。
+>   请注意，子进程不是继承的：如果A生成子进程B，B生成子进程C，则A不能等待C，即使B已死亡。进程A对`wait(C)`的调用必须失败。类似地，如果孤立进程的父进程提前退出，则不会将其分配给新的父进程。
+> - 调用wait的进程已经调用了pid上的wait。也就是说，一个进程最多只能等待一次给定的子进程。
+>
+> 进程可能产生任意数量的子进程，以任意顺序等待它们，甚至可能在没有等待部分或全部子进程的情况下退出。你的设计应该考虑等待发生的所有方式。必须释放进程的所有资源，包括其结构线程，无论其父进程是否等待它，也不管子进程是在其父进程之前还是之后退出。
+>
+> 您必须确保Pintos在初始进程退出之前不会终止。提供的Pintos代码试图通过从`main()`（在`threads/init.c`中）调用`process_wait()`（在`userprog/process.c`中）来实现这一点。**我们建议您根据函数顶部的注释实现`process_wait()`，然后根据`process_wait()`实现wait系统调用**。
+>
+> **实现这个系统调用需要比其他任何调用都多得多的工作。**
+
+根据提示，我们找到`process_wait()`函数
+
+```c
+/* Waits for thread TID to die and returns its exit status.  If
+   it was terminated by the kernel (i.e. killed due to an
+   exception), returns -1.  If TID is invalid or if it was not a
+   child of the calling process, or if process_wait() has already
+   been successfully called for the given TID, returns -1
+   immediately, without waiting.
+   This function will be implemented in problem 2-2.  For now, it
+   does nothing. */
+int
+process_wait (tid_t child_tid UNUSED) 
+{
+  return -1;
+}
+```
+
+等待线程TID结束并返回其退出状态。如果它被**内核终止**（即由于异常而终止），则返回-1。如果**TID无效**，或者它不是调用进程的子进程，或者如果**已经为给定TID成功调用了`process_wait()`**，则立即返回-1，而不等待。
+
+此功能将在问题2-2中实现。现在，它什么也没做。
+
+在线程结构体中再加入下面的代码
+
+```c
+struct list all_child_threads;      /* 存储所有子进程的结构体，为什么设置为list结构，后面会有解释 */
+struct child_process * thread_child;/* 存储线程的子进程 */
+int exit_status;                    /* 退出状态 */
+```
+
+创建子进程结构体`child_process`
+
+```c
+struct child_process
+  {
+    int tid;
+    struct list_elem child_elem;         // 上面设置为了list，所以这里设置为list_elem类型
+    struct semaphore sema;               // 控制等待的信号量
+    bool iswait;           /* 子进程运行状态 */
+    int exit_status_child;               // 子进程退出状态
+  };
+
+```
+
+修改`thread_create()`函数
+
+```c
+// 初始化子进程，分配存储空间
+  t->thread_child = malloc(sizeof(struct child));
+// tid = t->tid = allocate_tid ()，子进程的tid初始化为自己的tid，参考Linux
+  t->thread_child->tid = tid;
+// 初始化子进程的信号量
+  sema_init (&t->thread_child->sema, 0);
+// 将子进程放入到所有进程列表中，注意，我们放入的是list_elem类型的子进程指针，至于为什么这么做，后面有详细的解释
+  list_push_back (&thread_current()->all_child_threads, &t->thread_child->child_elem);
+// 子进程的退出状态设置为最大值
+  t->thread_child->exit_status_child = UINT32_MAX;
+// 子进程没有在运行
+  t->thread_child->iswait = false;
+```
+
+**思路**：我们既然需要实现父进程对子进程的`wait()`函数，那么就需要对子进程进行相应的处理，首先，父进程需要知道，自己要`wait()`的子进程在哪，所以需要给进程结构体中增加`thread_child`，表示父进程拥有的子进程，也要增添退出状态记录，同理，也要单独增加子进程结构体，包含了子进程的进本信息。之后，我们就需要在创建进程的时候把子进程也增添到父进程的结构体中，同时将子进程tid赋值为当前tid，子进程信号量需要初始化，，将子进程的状态设置为false，表示不运行，子进程退出状态设置为最大值，并把初始化好的子进程放入父进程的所有子进程列表中，至此，一个带子进程创建过程的进程创建函数就完成了。
+
+创建完成了，那么我们下一步的工作就是实现wait()功能，首先据需要按照给定的子进程tid，找出来你想要暂停哪个子进程，找出来后，判断该进程是否已经被wait，如果已经被wait，则返回-1表示错误，否则将iswait改为true，表示该进程已经被wait，然后阻塞该进程。如果没有找到该进程，则说明需要wait的进程不存在，返回-1表示错误，最后，将该子进程从总子进程列表中删除，并将子进程的退出状态作为该函数的返回值返回，按照题目要求。
+
+
+
+> 正式开始之前，我们需要先了解一下Pintos定义的`list.c`文件
+
+这种双链表的实现不需要使用动态分配的内存。相反，每个结构这是一个潜在的列表元素，必须嵌入一个结构列表元素成员所有列表函数都在这些结构上运行列出所有的元素。**`list_entry`宏允许从结构列表元素返回到`包含`它的结构对象**。
+
+因此，我们找到了**通过`list_elem`返回包含这一项结构体**的方法：`list_entry()`
+
+```c
+#define list_entry(LIST_ELEM, STRUCT, MEMBER)           \
+        ((STRUCT *) ((uint8_t *) &(LIST_ELEM)->next     \
+                     - offsetof (STRUCT, MEMBER.next)))
+```
+
+取出列表中第一个元素的方法：`list_begin()`
+
+```c
+/* Returns the beginning of LIST.  */
+struct list_elem *
+list_begin (struct list *list)
+{
+  ASSERT (list != NULL);
+  return list->head.next;
+}
+```
+
+取出当前元素的下一个元素的方法：`list_next()`
+
+**注意，该函数不需要传入原list表，因为`list`和`list_elem`的实现方式是链表**
+
+```c
+/* Returns the element after ELEM in its list.  If ELEM is the
+   last element in its list, returns the list tail.  Results are
+   undefined if ELEM is itself a list tail. */
+struct list_elem *
+list_next (struct list_elem *elem)
+{
+  ASSERT (is_head (elem) || is_interior (elem));
+  return elem->next;
+}
+```
+
+取出列表中最后一个元素的方法：`list_end()`
+
+```c
+/* Returns LIST's tail.
+   list_end() is often used in iterating through a list from
+   front to back.  See the big comment at the top of list.h for
+   an example. */
+struct list_elem *
+list_end (struct list *list)
+{
+  ASSERT (list != NULL);
+  return &list->tail;
+}
+```
+
+删除列表中指定元素的方法：`list_remove()`
+
+```c
+/* Removes ELEM from its list and returns the element that
+   followed it.  Undefined behavior if ELEM is not in a list.
+   A list element must be treated very carefully after removing
+   it from its list.  Calling list_next() or list_prev() on ELEM
+   will return the item that was previously before or after ELEM,
+   but, e.g., list_prev(list_next(ELEM)) is no longer ELEM!
+   The list_remove() return value provides a convenient way to
+   iterate and remove elements from a list:
+   for (e = list_begin (&list); e != list_end (&list); e = list_remove (e))
+     {
+       ...do something with e...
+     }
+   If you need to free() elements of the list then you need to be
+   more conservative.  Here's an alternate strategy that works
+   even in that case:
+   while (!list_empty (&list))
+     {
+       struct list_elem *e = list_pop_front (&list);
+       ...do something with e...
+     }
+*/
+struct list_elem *
+list_remove (struct list_elem *elem)
+{
+  ASSERT (is_interior (elem));
+  elem->prev->next = elem->next;
+  elem->next->prev = elem->prev;
+  return elem->next;
+}
+```
+
+这些方法正好满足了我们遍历整个子进程数组寻找对应的子进程的需求，这也就是为什么前面结构体在定义时选择`list`和`list_elem`作为结构的原因。
+
+开始吧！
+
+```c
+int
+process_wait (tid_t child_tid UNUSED)
+{
+  // 第一步，找出指定child_tid的子进程
+  // 所有子进程的列表，注意，类型为list
+  struct list *allchilds = &thread_current()->childs;
+  // 定义一个子进程指针，注意，类型为list_elem
+  struct list_elem *child_ptr;
+  // 取出第一个子进程
+  child_ptr = list_begin (l);
+  // 定义一个子进程指针，注意，类型为child，我们之所以要使用list和list_elem类型，就是因为Pintos中对这种数据类型提供了方便的遍历方法，因此，我们需要用真正的子进程数据格式child来接收遍历出来的list_elem子进程类型
+  struct child *child_ptr2 = NULL;
+  // 开始遍历
+  while (child_ptr != list_end (l))
+  {
+    // 根据list_elem返回包含list_elem的结构体child，我们通过这种巧妙地转变实现对子进程地遍历查找
+    child_ptr2 = list_entry (child_elem_ptr, struct child, child_elem);
+    // 判断是不是我们要找地子进程，通过pid来判断
+    if (child_ptr2->tid == child_tid)
+    {
+      // 判断当前进程是否已经被wait
+      if (child_ptr2->iswait == false)
+      {
+        // 如果没有被wait，则将其iswait属性状态改为true，表示该进程已经被wait了
+        child_ptr2->iswait = true;
+        // 调用sema_down()函数阻塞子进程
+        sema_down (&child_ptr2->sema);
+        // 找到目标函数后，直接退出while循环即可
+        break;
+      } 
+      // 当前进程已经被wait，根据实验要求，返回-1
+      else
+      {
+        return -1;
+      }
+    }
+    // 没有找到子进程，子进程指针指向所有子进程列表中地下一个子进程
+    child_ptr = list_next (child_ptr);
+  }
+  // 如果直到找完整个所有子进程列表都还没有找到目标tid地子进程，判断条件是当前子进程指针是否等于所有子进程列表中地最后一个子进程
+  if (child_ptr == list_end (l)) {
+    // 找不到目标tid子进程，函数返回-1
+    return -1;
+  }
+  // 在所有子进程列表中删除目标tid子进程
+  list_remove (child_ptr);
+  // 返回子进程地退出状态值
+  return child_ptr2->exit_status_child;
+}
+```
+
+相关函数调用说明
+
+`sema_down()`
+
+```c
+/* Down or "P" operation on a semaphore.  Waits for SEMA's value
+   to become positive and then atomically decrements it.
+   This function may sleep, so it must not be called within an
+   interrupt handler.  This function may be called with
+   interrupts disabled, but if it sleeps then the next scheduled
+   thread will probably turn interrupts back on. */
+void
+sema_down (struct semaphore *sema) 
+{
+  enum intr_level old_level;
+
+  ASSERT (sema != NULL);
+  ASSERT (!intr_context ());
+
+  old_level = intr_disable ();
+  while (sema->value == 0) 
+    {
+      list_insert_ordered (&sema->waiters, &thread_current ()->elem, thread_cmp_priority, NULL);
+      thread_block ();
+    }
+  sema->value--;
+  intr_set_level (old_level);
+}
+```
+
+信号量上的向下或“P”操作。等待SEMA的值变为正值，然后按原子顺序递减。此函数可能处于休眠状态，因此不能在中断处理程序中调用。此函数可以在中断被禁用的情况下调用，但如果它处于休眠状态，则下一个调度线程可能会重新打开中断。
+
+因此，该函数的功能是通过信号量的操作阻塞指定进程，该进程被阻塞并占有资源。
+
+那么，怎么将已经退出的子进程的资源释放呢？
+
+```c
+/* Up or "V" operation on a semaphore.  Increments SEMA's value
+   and wakes up one thread of those waiting for SEMA, if any.
+   This function may be called from an interrupt handler. */
+void
+sema_up (struct semaphore *sema) 
+{
+  enum intr_level old_level;
+
+  ASSERT (sema != NULL);
+
+  old_level = intr_disable ();
+  if (!list_empty (&sema->waiters)) 
+    thread_unblock (list_entry (list_pop_front (&sema->waiters),
+                                struct thread, elem));
+  sema->value++;
+  intr_set_level (old_level);
+}
+```
+
+信号量上的Up或“V”操作。增加SEMA的值并唤醒等待SEMA的线程（如果有）。此函数可以从中断处理程序调用。
+
+因此，在进程退出函数中，调用`sema_up()`函数释放进程占有的还没有释放的资源即可。
+
+```c
+// thread.c
+
+struct thread *cur = thread_current();
+printf ("%s: exit(%d)\n",cur->name, cur->ret); /* 输出进程name以及进程return值 */ 
+// 记录子进程退出状态
+cur->thread_child->exit_status_child = cur->exit_status;
+// 子进程退出，释放资源
+sema_up (&cur->thread_child->sema);
+```
+
+最后我们在函数`sys_wait()`里调用`process_wait()`即可
+
+```c
+#include "process.h"
+
+void 
+sys_wait (struct intr_frame* f)
+{
+  uint32_t *ptr = f->esp;
+  // ptr存储系统调用函数名称，ptr+1存储系统调用参数指针
+  judge_pointer (ptr + 1);
+  // 指针移动一位
+  *ptr++;
+  // 子进程的退出状态值赋值给eax寄存器
+  f->eax = process_wait(*ptr);
+}
+```
+
+
 
