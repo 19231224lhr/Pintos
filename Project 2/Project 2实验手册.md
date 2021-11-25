@@ -111,7 +111,7 @@
 
 在 Pintos 中，用户程序调用整数 $0x30进行系统调用，此时用户就会把没有权限干的活交给系统调用去干，系统调用的栈指针就是`esp`，返回值是`eax`。**我们需要干的事说白了就是根据`esp`指向栈的参数内容，完成系统调用对应的功能，最后把返回值放到`eax`里。**
 
-#### `judge_ptr()`
+#### `judge_pointer()`
 
 根据Pintos文档描述
 
@@ -300,4 +300,155 @@ page_fault (struct intr_frame *f)
   kill (f);
 }
 ```
+
+#### `syscall_init()`
+
+准备第二步，实现系统调用的第一步，也就是获取到系统调用
+
+系统调用属于中断，因此初始程序中的第一行其实就是利用中断机制
+
+在文件`src/lib/syscall-nr.h`中，我们可以找到所有系统调用的标识号
+
+```c
+/* System call numbers. */
+enum 
+  {
+    /* Projects 2 and later. */
+    SYS_HALT,                   /* Halt the operating system. */
+    SYS_EXIT,                   /* Terminate this process. */
+    SYS_EXEC,                   /* Start another process. */
+    SYS_WAIT,                   /* Wait for a child process to die. */
+    SYS_CREATE,                 /* Create a file. */
+    SYS_REMOVE,                 /* Delete a file. */
+    SYS_OPEN,                   /* Open a file. */
+    SYS_FILESIZE,               /* Obtain a file's size. */
+    SYS_READ,                   /* Read from a file. */
+    SYS_WRITE,                  /* Write to a file. */
+    SYS_SEEK,                   /* Change position in a file. */
+    SYS_TELL,                   /* Report current position in a file. */
+    SYS_CLOSE,                  /* Close a file. */
+}
+```
+
+> C语言`enum`
+>
+> 枚举类，每一项的索引值默认从0开始依次递增
+
+怎么获取到系统调用的栈指针指向的当前值呢？
+
+我们可以发现源程序中的`syscall_call()`的参数出现了一个结构体：`intr_frame`，我们在`user/interrupt.h`文件中找出其具体定义
+
+```c
+/* Interrupt stack frame. */
+struct intr_frame
+  {
+    /* Pushed by intr_entry in intr-stubs.S. */
+    uint16_t ss, :16;           /* Data segment for esp. */
+  };
+```
+
+因此，这个结构体存储的就是当前系统调用的栈指针指向的值，所以，我们需要定义一个以此结构为类型的数组`syscallArray`，从中取出当前的指针值，根据系统调用类型的不同，执行不同的系统调用
+
+在 Pintos 中，用户程序调用整数 $0x30进行系统调用，此时用户就会把没有权限干的活交给系统调用去干，系统调用的栈指针就是`esp`，返回值是`eax`
+
+所以，第一行语句的函数`intr_register_int()`其实就是调用了Pintos的系统中断功能，将按照传入的值进行中断类型的分类与存储
+
+```c
+static void
+register_handler (uint8_t vec_no, int dpl, enum intr_level level,
+                  intr_handler_func *handler, const char *name)
+{
+  ASSERT (intr_handlers[vec_no] == NULL);
+  if (level == INTR_ON)
+    idt[vec_no] = make_trap_gate (intr_stubs[vec_no], dpl);
+  else
+    idt[vec_no] = make_intr_gate (intr_stubs[vec_no], dpl);
+  // 存储本次系统中断需要执行的操作，我们传入的是系统中断调用的函数名
+  intr_handlers[vec_no] = handler;
+  // 存储本次系统中断的名称，我们传入的是syscall，表示系统调用
+  intr_names[vec_no] = name;
+}
+
+void
+intr_register_int (uint8_t vec_no, int dpl, enum intr_level level,
+                   intr_handler_func *handler, const char *name)
+{
+  ASSERT (vec_no < 0x20 || vec_no > 0x2f);
+  register_handler (vec_no, dpl, level, handler, name);
+}
+```
+
+第一步系统调用中断存储完成后，我们就可以在数组中存储系统调用对应的操作，使得之后在执行系统调用时执行数组中对应的操作即可
+
+```c
+// src/userprog/syscall.c
+
+// 存储系统调用类型的数组syscallArray
+static void (*syscallArray[max_syscall])(struct intr_frame *);
+// 系统调用
+void sys_halt(struct intr_frame* f); /* syscall halt. */
+void sys_exit(struct intr_frame* f); /* syscall exit. */
+void sys_exec(struct intr_frame* f); /* syscall exec. */
+void sys_create(struct intr_frame* f); /* syscall create */
+void sys_remove(struct intr_frame* f); /* syscall remove */
+void sys_open(struct intr_frame* f);/* syscall open */
+void sys_wait(struct intr_frame* f); /*syscall wait */
+void sys_filesize(struct intr_frame* f);/* syscall filesize */
+void sys_read(struct intr_frame* f);  /* syscall read */
+void sys_write(struct intr_frame* f); /* syscall write */
+void sys_seek(struct intr_frame* f); /* syscall seek */
+void sys_tell(struct intr_frame* f); /* syscall tell */
+void sys_close(struct intr_frame* f); /* syscall close */
+
+// 系统调用初始化
+void
+syscall_init(void) {
+    // 存储中断类型为系统调用syscall，存储中断对应的操作syscall_handler函数，通过0x30识别为系统调用
+    intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall");
+    // 存储系统调用对应的操作，SYS_EXEC为Pintos定义的系统调用标识号
+    // 使用的是枚举类中定义的系统调用标识号，因此实际存储的数组为下标从0开始递增的数组
+    syscallArray[SYS_EXEC] = &sys_exec;
+    syscallArray[SYS_HALT] = &sys_halt;
+    syscallArray[SYS_EXIT] = &sys_exit;
+    syscallArray[SYS_WAIT] = &sys_wait;
+    syscallArray[SYS_CREATE] = &sys_create;
+    syscallArray[SYS_REMOVE] = &sys_remove;
+    syscallArray[SYS_OPEN] = &sys_open;
+    syscallArray[SYS_WRITE] = &sys_write;
+    syscallArray[SYS_SEEK] = &sys_seek;
+    syscallArray[SYS_TELL] = &sys_tell;
+    syscallArray[SYS_CLOSE] = &sys_close;
+    syscallArray[SYS_READ] = &sys_read;
+    syscallArray[SYS_FILESIZE] = &sys_filesize;
+}
+```
+
+#### `syscall_handler()`
+
+`syscall_handler()`函数执行系统调用函数
+
+```c
+/* 检测指针是否正确，检测系统调用号是否正确，执行系统调用 */
+static void
+syscall_handler (struct intr_frame *f UNUSED) 
+{
+  int * ptr = f->esp;
+  // 当前如果要执行系统调用，则需要判断指针是否指向正确，这一部分功能我们已经在上面的judge_pointer()函数中实现了，直接调用即可
+  judge_pointer (ptr + 1);
+  // 光指针正确了还不行，因为这样也可以调用不是系统调用的函数，因此，我们需要检测寄存器的值，在src/lib/syscall-nr.h文件中，系统调用总共有20个，因此，只要寄存器的值大于20或小于0，就说明当前调用了系统调用处理函数但是没有调用系统调用，此时程序应该报错并退出
+  int type = * (int *)f->esp;
+  if(type <= 0 || type >= 20){
+    // 设置线程状态值为-1，表示线程错误
+    thread_current()->st_exit = -1;
+    // 线程退出
+  	thread_exit ();
+  }
+  // 上述判断都通过后，可以执行系统调用函数，f为系统调用函数相关参数
+  syscallArray[type](f);
+}
+```
+
+这些工作完成后，我们就可以正式开始完成系统调用函数功能代码实现了。
+
+#### `halt()`
 
