@@ -101,6 +101,7 @@ syscall_handler (struct intr_frame *f UNUSED)
 {
     int * ptr = f->esp;
     // 当前如果要执行系统调用，则需要判断指针是否指向正确，这一部分功能我们已经在上面的judge_pointer()函数中实现了，直接调用即可
+    // ptr里指向系统调用函数名，ptr + 1里指向系统调用第一个参数
     judge_pointer (ptr + 1);
     // 光指针正确了还不行，因为这样也可以调用不是系统调用的函数，因此，我们需要检测寄存器的值，在src/lib/syscall-nr.h文件中，系统调用总共有20个，因此，只要寄存器的值大于20或小于0，就说明当前调用了系统调用处理函数但是没有调用系统调用，此时程序应该报错并退出
     int type = * (int *)f->esp;
@@ -112,4 +113,30 @@ syscall_handler (struct intr_frame *f UNUSED)
     }
     // 上述判断都通过后，可以执行系统调用函数，f为系统调用函数相关参数
     syscallArray[type](f);
+}
+
+// 系统调用：halt()，关闭系统
+// f:void
+void
+sys_halt (struct intr_frame* f)
+{
+    shutdown_power_off();
+}
+
+/*
+ * 系统调用：exit()
+ * 终止当前用户程序，将状态返回内核。如果进程的父进程等待它（见下文），则将返回此状态。通常，状态为0表示成功，非零值表示错误。
+ */
+void
+sys_exit (struct intr_frame* f)
+{
+    uint32_t *user_ptr = f->esp;
+    // ptr里指向系统调用函数名，ptr + 1里指向系统调用第一个参数
+    judge_pointer (user_ptr + 1);
+    // 指针移动，指向第一个参数
+    *user_ptr++;
+    // 第一个参数保存了int status，将其保存在进程状态中
+    thread_current()->st_exit = *user_ptr;
+    // 进程退出
+    thread_exit ();
 }

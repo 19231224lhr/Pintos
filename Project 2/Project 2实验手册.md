@@ -452,3 +452,63 @@ syscall_handler (struct intr_frame *f UNUSED)
 
 #### `halt()`
 
+> `void halt (void)`通过调用`shutdown_power_off()`（在`devices/shutdown.h`中声明）终止Pintos。这应该很少使用，因为您会丢失一些关于可能的死锁情况等的信息
+>
+> > `halt`：停止
+
+我们首先来看一下`shutdown_power_off()`函数的功能
+
+```c
+// devices/shutdown.h
+
+/* Powers down the machine we're running on,
+   as long as we're running on Bochs or QEMU. */
+void
+shutdown_power_off (void)
+{
+  const char s[] = "Shutdown";
+  const char *p;
+  // ...
+}
+```
+
+关闭我们正在运行的机器的电源，只要我们使用`Bochs`或`QEMU`
+
+因此，我们按照实验文档，直接调用`shutdown_power_off()`函数即可
+
+```c
+#include <devices/shutdown.h>
+
+// 系统调用：halt()
+// 关闭系统
+void
+sys_halt (struct intr_frame* f)
+{
+    shutdown_power_off();
+}
+```
+
+#### `exit()`
+
+> `void exit (int status)`
+>
+> 终止当前用户程序，将状态返回内核。如果进程的父进程等待它（见下文），则将返回此状态。通常，状态为0表示成功，非零值表示错误。
+
+```c
+void 
+sys_exit (struct intr_frame* f)
+{
+  uint32_t *user_ptr = f->esp;
+  // ptr里指向系统调用函数名，ptr + 1里指向系统调用第一个参数
+  judge_pointer (user_ptr + 1);
+  // 指针移动，指向第一个参数
+  *user_ptr++;
+  // 第一个参数保存了int status，将其保存在进程状态中
+  thread_current()->st_exit = *user_ptr;
+  // 进程退出
+  thread_exit ();
+}
+```
+
+**不要忘记移动指针**。
+
