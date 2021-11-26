@@ -3,9 +3,7 @@
 
 #include <debug.h>
 #include <list.h>
-#include "synch.h"
 #include <stdint.h>
-
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -92,40 +90,17 @@ struct thread
     int priority;                       /* Priority. */
     struct list_elem allelem;           /* List element for all threads list. */
 
-    struct semaphore sema;  // 信号量
-    struct thread* parent;  // 父进程
-    bool success;   // 记录线程是否成功执行
-   
-
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
-
-    int ret_status;//保存进程退出状态
-    
-
-//#ifdef USERPROG
+#ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
-//#endif
+#endif
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
-    struct list all_child_threads;                 /* 存储所有子进程的结构体 */
-    struct child_process * thread_child;        /* 存储线程的子进程 */
-    int exit_status;                    /* 退出状态 */
-
-};
-
-struct child_process
-{
-    int tid;
-    struct list_elem child_elem;         /* list of children */
-    struct semaphore sema;               // 控制等待的信号量
-    bool iswait;           /* 子进程运行状态 */
-    int exit_status_child;               // 子进程退出状态
-};
-
+  };
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
@@ -148,7 +123,7 @@ struct thread *thread_current (void);
 tid_t thread_tid (void);
 const char *thread_name (void);
 
-void thread_exit (void);
+void thread_exit (void) NO_RETURN;
 void thread_yield (void);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
@@ -162,6 +137,5 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
-
 
 #endif /* threads/thread.h */

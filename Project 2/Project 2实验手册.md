@@ -153,7 +153,7 @@
 
 如上所示，**您的代码应该从用户虚拟地址空间的最顶端开始堆栈**，在虚拟地址`PHYS_BASE`（在`threads/vaddr.h`中定义）下方的页面中。
 
-因此，我们不仅需要检测指针指向的是用户存储空间还是内核存储空间，我们还需要判断当前指针是否有可能指向的是内核空间，将指针加4，如果加4后指向的地址属于内核存储空间（加4的原因是因为Type char[4]），则应该报错。
+因此，我们不仅需要检测指针指向的是用户存储空间还是内核存储空间，我们还需要判断当前指针是否有可能指向的是内核空间，将指针加4，如果加4后指向的地址属于内核存储空间，则应该报错。
 
 在`userprog/syscall.c`中定义函数`judge_ptr()`
 
@@ -506,7 +506,7 @@ sys_exit(struct intr_frame *f) {
     // 指针移动，指向第一个参数
     *ptr++;
     // 第一个参数保存了int status，将其保存在进程状态中
-    thread_current()->st_exit = *ptr;
+    thread_current()->exit_status = *ptr;
     // 进程退出
     thread_exit();
 }
@@ -616,14 +616,14 @@ process_wait (tid_t child_tid UNUSED)
 
 ```c
 struct list all_child_threads;      /* 存储所有子进程的结构体，为什么设置为list结构，后面会有解释 */
-struct child_process * thread_child;/* 存储线程的子进程 */
+struct child * thread_child;/* 存储线程的子进程 */
 int exit_status;                    /* 退出状态 */
 ```
 
 创建子进程结构体`child_process`
 
 ```c
-struct child_process
+struct child
   {
     int tid;
     struct list_elem child_elem;         // 上面设置为了list，所以这里设置为list_elem类型
@@ -767,7 +767,7 @@ process_wait (tid_t child_tid UNUSED)
   while (child_ptr != list_end (l))
   {
     // 根据list_elem返回包含list_elem的结构体child，我们通过这种巧妙地转变实现对子进程地遍历查找
-    child_ptr2 = list_entry (child_elem_ptr, struct child, child_elem);
+    child_ptr2 = list_entry (child_ptr, struct child, child_elem);
     // 判断是不是我们要找地子进程，通过pid来判断
     if (child_ptr2->tid == child_tid)
     {
@@ -891,5 +891,183 @@ sys_wait (struct intr_frame* f)
 }
 ```
 
+#### `write()`
 
+> **您必须同步系统调用，以便任意数量的用户进程可以同时进行调用**。特别是，一次从多个线程调用filesys目录中提供的文件系统代码是不安全的。系统调用实现必须将文件系统代码视为关键部分。不要忘记，process_execute（）也会访问文件。目前，我们建议不要修改filesys目录中的代码。
+
+怎么实现文件系统调用的同步呢？锁！
+
+因此，在系统调用时，我们需要继续补充我们的结构体`thread`，因为系统调用会调用文件，为了避免冲突，我们需要记录每个进程拥有的文件数，这样才能防止进程之间的对文件资源的冲突调用（**进程是操作系统资源分配的最小单位**）
+
+修改`thread`结构体，增添进程自身的文件和最大文件描述符
+
+为什么时最大文件描述符呢？因为文件描述符在操作系统中是递增的，先使用小的文件描述符，因此，记录一个进程所拥有的最大文件描述符可以帮助我们区分不同进程之间是否公用了同一文件资源
+
+```c
+struct list files;        // 进程所拥有的全部文件
+int max_file_fd;		  // 最大文件描述符
+```
+
+files列表中存储的就是文件的具体内容，具体包括
+
+```c
+struct thread_file
+  {
+    int fd;	// 文件描述符
+    struct file* file;	// 文件
+    struct list_elem file_elem;	// 用于找到整体的list_elem，详细作用在wait()函数中已经说明过了
+  };
+```
+
+好了，结构定义完了，我们需要建立两个函数，实现加锁和解锁的功能
+
+```c
+// thread.c
+
+// 定义文件锁，初始化在thread_init()中完成
+static struct lock lock_f;
+
+// 请求文件锁函数
+void 
+acquire_lock_f ()
+{
+  lock_acquire(&lock_f);
+}
+
+// 释放文件锁函数
+void 
+release_lock_f ()
+{
+  lock_release(&lock_f);
+}
+```
+
+这其中调用的函数`lock_acquire()`函数和`lock_release()`我们就不具体去看了，主要实现的就是请求锁与释放锁的功能
+
+不要忘记在`thread.h`文件中声明这两个函数
+
+```c
+//thread.h
+
+void acquire_lock_f(void);
+void release_lock_f(void);
+```
+
+初始化锁`lock_f`
+
+```c
+// thread_init()
+
+lock_init(&lock_f);
+```
+
+初始化`files`
+
+```c
+/// init_thread()
+
+//syscall
+    if (t==initial_thread) t->parent=NULL;
+        /* Record the parent's thread */
+    else t->parent = thread_current ();
+    /* List initialization for lists */
+    list_init (&t->all_child_threads);
+    list_init (&t->files);
+    /* Semaphore initialization for lists */
+    sema_init (&t->sema, 0);
+    t->success = true;
+    /* Initialize exit status to MAX */
+    t->exit_status = UINT32_MAX;
+    t->max_file_fd=2;//not 0 or 1
+```
+
+在进程退出时，我们也需要释放进程所拥有的文件资源
+
+```c
+//thread.c void thread_exit (void) 
+
+/*Close all the files*/
+  /*Our implementation for fixing the BUG that the file didn't close, PASS test file*/
+  struct list_elem *e;
+  struct list *files = &thread_current()->files;
+  // 当进程文件资源列表不为空时
+  while(!list_empty (files))
+  {
+    // 取当前指针指向的文件资源，指针指向下一个文件资源
+    e = list_pop_front (files);
+    // 获得文件结构体
+    struct thread_file *f = list_entry (e, struct thread_file, file_elem);
+    // 原子操作
+    acquire_lock_f ();
+    file_close (f->file);
+    release_lock_f ();
+    // 从文件资源列表中去除
+    list_remove (e);
+    // 释放之前定义的文件结构体的存储空间
+    free (f);
+  }
+```
+
+准备工作完成了，接下来，我们完成`write()`函数
+
+> `int write (int fd, const void *buffer, unsigned size)`
+>
+> 将大小字节从缓冲区写入打开的文件fd。返回实际写入的字节数，如果某些字节无法写入，则可能小于大小。
+> 写入文件末尾通常会扩展文件，但基本文件系统不会实现文件增长。预期的行为是在文件末尾写入尽可能多的字节，并返回实际写入的字节数，如果根本无法写入字节，则返回0。
+> Fd 1写入控制台。您要写入控制台的代码应该在一次调用putbuf（）中写入所有缓冲区，至少只要大小不超过几百字节。（分解较大的缓冲区是合理的。）否则，由不同进程输出的文本行可能最终在控制台上交错，混淆了人类读者和我们的分级脚本。
+
+实现思路见注释
+
+```c
+/* Do system write, Do writing in stdout and write in files */
+void 
+sys_write (struct intr_frame* f)
+{
+  uint32_t *user_ptr = f->esp;
+  judge_pointer (user_ptr + 7);
+  judge_pointer (*(user_ptr + 6));
+  *user_ptr++;
+  // ptr文件描述符
+  int fd = *user_ptr;
+  // ptr + 1c
+  const char * buffer = (const char *)*(user_ptr+1);
+  // ptr + 2参数长度
+  off_t size = *(user_ptr+2);
+  if (fd == 1) {//writes to the console
+    /* Use putbuf to do testing */
+    putbuf(buffer,size);
+    f->eax = size;//return number written
+  }
+  else
+  {
+    /* Write to Files */
+    struct thread_file * thread_file_temp = find_file_id (*user_ptr);
+    if (thread_file_temp)
+    {
+      acquire_lock_f ();//file operating needs lock
+      f->eax = file_write (thread_file_temp->file, buffer, size);
+      release_lock_f ();
+    } 
+    else
+    {
+      f->eax = 0;//can't write,return 0
+    }
+  }
+}
+
+/* Find file by the file's ID */
+struct thread_file * 
+find_file_id (int file_id)
+{
+  struct list_elem *e;
+  struct thread_file * thread_file_temp = NULL;
+  struct list *files = &thread_current ()->files;
+  for (e = list_begin (files); e != list_end (files); e = list_next (e)){
+    thread_file_temp = list_entry (e, struct thread_file, file_elem);
+    if (file_id == thread_file_temp->fd)
+      return thread_file_temp;
+  }
+  return false;
+}
+```
 
