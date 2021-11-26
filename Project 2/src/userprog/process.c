@@ -28,20 +28,44 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *file_name) 
 {
-  char *fn_copy;
+char *fn_copy0, *fn_copy1;
   tid_t tid;
+
+
+    /* Make a copy of FILE_NAME.
+       Otherwise strtok_r will modify the const char *file_name. */
+    fn_copy0 = palloc_get_page(0);//palloc_get_page(0)动态分配了一个内存页
+    if (fn_copy0 == NULL)//分配失败
+        return TID_ERROR;
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page (0);
-  if (fn_copy == NULL)
+  fn_copy1 = palloc_get_page (0);
+  if (fn_copy1 == NULL)
+  {
+    palloc_free_page(fn_copy0);
     return TID_ERROR;
-  strlcpy (fn_copy, file_name, PGSIZE);
+  }
+  //把file_name 复制2份，PGSIZE为页大小
+  strlcpy (fn_copy0, file_name, PGSIZE);
+  strlcpy (fn_copy1, file_name, PGSIZE);
+
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  char *save_ptr;
+  char *cmd = strtok_r(fn_copy0, " ", &save_ptr);
+  
+  tid = thread_create(cmd, PRI_DEFAULT, start_process, fn_copy1);
+  palloc_free_page(fn_copy0);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+  {
+    palloc_free_page (fn_copy1); 
+    return tid;
+  }
+
+  sema_down(&thread_current()->sema);
+  if(!thread_current()->success)
+      return TID_ERROR;
   return tid;
 }
 
@@ -50,21 +74,52 @@ process_execute (const char *file_name)
 static void
 start_process (void *file_name_)
 {
-  char *file_name = file_name_;
+char *file_name = file_name_;
   struct intr_frame if_;
   bool success;
 
-  /* Initialize interrupt frame and load executable. */
+char *fn_copy=malloc(strlen(file_name)+1);
+strlcpy(fn_copy,file_name,strlen(file_name)+1);
+
+  /* Initialize interrupt frame */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
 
-  /* If load failed, quit. */
+  /*load executable. */
+  //此处发生改变，需要传入文件名
+  char *token, *save_ptr;
+  file_name = strtok_r (file_name, " ", &save_ptr);
+  success = load (file_name, &if_.eip, &if_.esp);
+  
+  if (success)
+    {
+
+    /* Our implementation for Task 1:
+      Calculate the number of parameters and the specification of parameters */
+    int argc = 0;
+    /* The number of parameters can't be more than 50 in the test case */
+    int argv[50];
+    for (token = strtok_r (fn_copy, " ", &save_ptr); token != NULL; token = strtok_r (NULL, " ", &save_ptr)){
+      if_.esp -= (strlen(token)+1);//栈指针向下移动，留出token+'\0'的大小
+      memcpy (if_.esp, token, strlen(token)+1);//token+'\0'复制进去
+      argv[argc++] = (int) if_.esp;//存储 参数的地址
+    }
+    push_argument (&if_.esp, argc, argv);//将参数的地址压入栈
+     /* Record the exec_status of the parent thread's success and sema up parent's semaphore */
+    thread_current ()->parent->success = true;
+    sema_up (&thread_current ()->parent->sema);
+    }
+  /* Free file_name whether successed or failed. */
   palloc_free_page (file_name);
+  free(fn_copy);
   if (!success) 
+  {
+    thread_current ()->parent->success = false;
+    sema_up (&thread_current ()->parent->sema);
     thread_exit ();
+  }
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -76,6 +131,25 @@ start_process (void *file_name_)
   NOT_REACHED ();
 }
 
+void
+push_argument(void **esp, int argc, int argv[]){
+*esp = (int)*esp & 0xfffffffc;
+  *esp -= 4;//四位对齐（word-align）下压uint8_t大小
+  *(int *) *esp = 0;
+    /*下面这个for循环的意义是：按照argc的大小，循环压入argv数组，这也符合argc和argv之间的关系*/
+  for (int i = argc - 1; i >= 0; i--)
+  {
+    *esp -= 4;
+    *(int *) *esp = argv[i];
+  }
+  *esp -= 4;
+  *(int *) *esp = (int) *esp + 4;//压入argv[0]的地址
+  *esp -= 4;
+  *(int *) *esp = argc;
+  *esp -= 4;
+  *(int *) *esp = 0;
+}
+
 /* Waits for thread TID to die and returns its exit status.  If
    it was terminated by the kernel (i.e. killed due to an
    exception), returns -1.  If TID is invalid or if it was not a
@@ -85,10 +159,59 @@ start_process (void *file_name_)
 
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
+//int
+//process_wait (tid_t child_tid UNUSED)
+//{
+//  return -1;
+//}
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid UNUSED)
 {
-  return -1;
+    // 第一步，找出指定child_tid的子进程
+    // 所有子进程的列表，注意，类型为list
+    struct list *allchilds = &thread_current()->all_child_threads;
+    // 定义一个子进程指针，注意，类型为list_elem
+    struct list_elem *child_ptr;
+    // 取出第一个子进程
+    child_ptr = list_begin (allchilds);
+    // 定义一个子进程指针，注意，类型为child，我们之所以要使用list和list_elem类型，就是因为Pintos中对这种数据类型提供了方便的遍历方法，因此，我们需要用真正的子进程数据格式child来接收遍历出来的list_elem子进程类型
+    struct child *child_ptr2 = NULL;
+    // 开始遍历
+    while (child_ptr != list_end (allchilds))
+    {
+        // 根据list_elem返回包含list_elem的结构体child，我们通过这种巧妙地转变实现对子进程地遍历查找
+        child_ptr2 = list_entry (child_ptr, struct child, child_elem);
+        // 判断是不是我们要找地子进程，通过pid来判断
+        if (child_ptr2->tid == child_tid)
+        {
+            // 判断当前进程是否已经被wait
+            if (child_ptr2->iswait == false)
+            {
+                // 如果没有被wait，则将其iswait属性状态改为true，表示该进程已经被wait了
+                child_ptr2->iswait = true;
+                // 调用sema_down()函数阻塞子进程
+                sema_down (&child_ptr2->sema);
+                // 找到目标函数后，直接退出while循环即可
+                break;
+            }
+            // 当前进程已经被wait，根据实验要求，返回-1
+            else
+            {
+                return -1;
+            }
+        }
+        // 没有找到子进程，子进程指针指向所有子进程列表中地下一个子进程，实现方式是链表
+        child_ptr = list_next (child_ptr);
+    }
+    // 如果直到找完整个所有子进程列表都还没有找到目标tid地子进程，判断条件是当前子进程指针是否等于所有子进程列表中地最后一个子进程
+    if (child_ptr == list_end (allchilds)) {
+        // 找不到目标tid子进程，函数返回-1
+        return -1;
+    }
+    // 在所有子进程列表中删除目标tid子进程
+    list_remove (child_ptr);
+    // 返回子进程地退出状态值
+    return child_ptr2->exit_status_child;
 }
 
 /* Free the current process's resources. */
@@ -101,6 +224,7 @@ process_exit (void)
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;
+  printf ("%s: exit(%d)\n",cur->name, cur->ret_status); /* 打印name以及return值 */ 
   if (pd != NULL) 
     {
       /* Correct ordering here is crucial.  We must set
@@ -437,7 +561,7 @@ setup_stack (void **esp)
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success)
-        *esp = PHYS_BASE;
+        *esp = PHYS_BASE - 12;
       else
         palloc_free_page (kpage);
     }
@@ -463,3 +587,4 @@ install_page (void *upage, void *kpage, bool writable)
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
 }
+
