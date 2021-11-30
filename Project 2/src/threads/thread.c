@@ -313,11 +313,10 @@ thread_exit(void) {
        when it calls thread_schedule_tail(). */
     intr_disable();
     struct thread *cur = thread_current();
-  /*Print the information */
-  printf ("%s: exit(%d)\n",thread_name(), thread_current()->exit_status);
-
+ 
     // 记录子进程退出状态
     cur->thread_child->exit_status_child = cur->exit_status;
+// printf("+++++++++++++");
     // 子进程退出，释放资源
     sema_up(&cur->thread_child->sema);
 
