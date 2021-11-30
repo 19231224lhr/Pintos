@@ -115,7 +115,7 @@ struct thread
     struct child * thread_child;        /* 存储线程的子进程 */
     int exit_status;                    /* 退出状态 */
     struct list files;        // 进程所拥有的全部文件
-    int max_file_fd;		  // 最大文件描述符
+    int all_fd;		  // 最大文件描述符
 };
 
 struct thread_file

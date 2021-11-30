@@ -79,8 +79,8 @@ static tid_t allocate_tid(void);
 static struct lock lock_f;
 
 // 请求文件锁函数
-        void
-        acquire_lock_f()
+void
+acquire_lock_f()
 {
     lock_acquire(&lock_f);
 }
@@ -111,7 +111,8 @@ thread_init(void) {
     lock_init(&tid_lock);
     list_init(&ready_list);
     list_init(&all_list);
-
+    // 文件锁初始化
+    lock_init(&lock_f);
     /* Set up a thread structure for the running thread. */
     initial_thread = running_thread();
     init_thread(initial_thread, "main", PRI_DEFAULT);
@@ -313,7 +314,7 @@ thread_exit(void) {
        when it calls thread_schedule_tail(). */
     intr_disable();
     struct thread *cur = thread_current();
- 
+
     // 记录子进程退出状态
     cur->thread_child->exit_status_child = cur->exit_status;
 // printf("+++++++++++++");
@@ -322,20 +323,22 @@ thread_exit(void) {
 
     //thread.c void thread_exit (void)
 
-/*Close all the files*/
-    /*Our implementation for fixing the BUG that the file didn't close, PASS test file*/
+    // 释放进程所拥有的所有文件资源
     struct list_elem *e;
     struct list *files = &thread_current()->files;
     while(!list_empty (files))
     {
         e = list_pop_front (files);
         struct thread_file *f = list_entry (e, struct thread_file, file_elem);
+        // 申请锁
         acquire_lock_f ();
+        // 关闭文件资源
         file_close (f->file);
+        // 释放文件锁
         release_lock_f ();
-        /*Remove the file in the list*/
+        // 从文件列表中移除该文件资源
         list_remove (e);
-        /*Free the resource the file obtain*/
+        // 释放文件资源
         free (f);
     }
 
@@ -506,13 +509,15 @@ init_thread(struct thread *t, const char *name, int priority) {
     else t->parent = thread_current ();
     /* List initialization for lists */
     list_init (&t->all_child_threads);
+    // 初始化进程拥有的文件资源列表
     list_init (&t->files);
     /* Semaphore initialization for lists */
     sema_init (&t->sema, 0);
     t->success = true;
     /* Initialize exit status to MAX */
     t->exit_status = UINT32_MAX;
-    t->max_file_fd=2;//not 0 or 1
+    // 初始化所有进程最大文件描述符all_fd = 2
+    t -> all_fd = 2;
 
 
     old_level = intr_disable();

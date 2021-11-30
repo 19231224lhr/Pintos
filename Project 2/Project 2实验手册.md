@@ -891,7 +891,104 @@ sys_wait (struct intr_frame* f)
 }
 ```
 
-#### `wrtie()`
+#### 文件系统调用
+
+接下来就要进入到文件调用系统了，我们需要做一些准备工作
+
+> You must synchronize system calls so that any number of user processes can make them at once. In particular, it is not safe to call into the file system code provided in the `filesys` directory from multiple threads at once. Your system call implementation must treat the file system code as a critical section. Don't forget that `process_execute()` also accesses files. For now, we recommend against modifying code in the `filesys` directory.
+>
+> 您必须同步系统调用，以便任意数量的用户进程可以同时进行调用。特别是，一次从多个线程调用`filesys`目录中提供的文件系统代码是不安全的。系统调用实现必须将文件系统代码视为关键部分。不要忘记，`process_execute()`也会访问文件。目前，我们建议不要修改`filesys`目录中的代码。
+
+因此，根据Pintos官方实验文档的提示，我们需要提供一个文件锁，来防止在操作指定文件时其他进程来修改当前文件，同时，我们也需要提供文件资源释放机制，防止文件资源迟迟被一个资源占有而不被释放
+
+因此，为了实现这两个功能，我们需要修改`thread.h`文件中关于进程结构体的定义，增添一项`files`，表示当前进程所拥有的全部文件资源，类型为`list`，因为可以方便调用Pintos为我们准备好的`list`遍历方法
+
+```c
+// 当前进程所拥有的全部文件资源
+struct list files;
+```
+
+同时，定义一个文件结构体
+
+```c
+struct thread_file
+{
+    int fd;	// 文件描述符
+    struct file* file;	// 文件
+    struct list_elem file_elem;	// 用于找到整体的list_elem，详细作用在wait()函数中已经说明过了
+};
+```
+
+`thread_file`结构体就是进程结构体中`files`存储的文件资源结构
+
+同时完成对文件申请锁与释放锁函数的实现
+
+```c
+// 定义文件锁
+static struct lock lock_f;
+
+// 请求文件锁函数
+void
+acquire_lock_f()
+{
+    lock_acquire(&lock_f);
+}
+
+// 释放文件锁函数
+void
+release_lock_f() {
+    lock_release(&lock_f);
+}
+```
+
+由于定义了两个新的结构成员，因此我们需要分别初始化`files`与`lock_f`
+
+由于文件锁结构体只用初始化一次，因此我们在`thread_init()`函数中初始化`lock_f`
+
+```c
+// thread_init()
+
+// 文件锁初始化
+lock_init(&lock_f);
+```
+
+由于每个进程在初始化时都需要初始化自己进程结构体的`files`成员，因此我们在`init_thread()`函数中初始化`files`
+
+```c
+// init_thread()
+
+// 初始化进程拥有的文件资源列表
+list_init (&t->files);
+```
+
+最后，我们在来实现当进程退出时，释放其所拥有的所有文件资源
+
+```c
+// thread_exit()
+
+// 释放进程所拥有的所有文件资源
+    struct list_elem *e;
+    struct list *files = &thread_current()->files;
+    while(!list_empty (files))
+    {
+        e = list_pop_front (files);
+        struct thread_file *f = list_entry (e, struct thread_file, file_elem);
+        // 申请锁
+        acquire_lock_f ();
+        // 关闭文件资源
+        file_close (f->file);
+        // 释放文件锁
+        release_lock_f ();
+        // 从文件列表中移除该文件资源
+        list_remove (e);
+        // 释放文件资源
+        free (f);
+    }
+```
+
+实现思路都写在注释里，使用的主要方法依然时上文提到的Pintos为我们提供的`list`遍历方法
+
+#### `write()`
 
 
 
@@ -904,3 +1001,240 @@ write()函数的具体实现方式还没有整理成笔记，但是写完write()
 ![image-20211130214254386](Project 2实验手册.assets/image-20211130214254386.png)
 
 后面直接测试了`create()`函数，还没有写，所以测试点过不去，ok，下一个系统调用。
+
+
+
+#### `create()`
+
+> **bool create (const char *file, unsigned initial_size)**
+>
+> 创建一个名为`file`，`initially_size`字节的新文件。如果成功，则返回`true`，否则返回`false`。创建新文件不会打开它：**打开新文件是一个单独的操作，需要打开系统调用**。
+
+创建一个文件，这么重要的函数Pintos有可能会帮我们写过，在文件`src/filesys/filesys.c`中，Pintos为我们写好了一个创建文件的函数`filesys_create()`
+
+```c
+/* Creates a file named NAME with the given INITIAL_SIZE.
+   Returns true if successful, false otherwise.
+   Fails if a file named NAME already exists,
+   or if internal memory allocation fails. */
+bool
+filesys_create (const char *name, off_t initial_size) 
+{
+  block_sector_t inode_sector = 0;
+  struct dir *dir = dir_open_root ();
+  bool success = (dir != NULL
+                  && free_map_allocate (1, &inode_sector)
+                  && inode_create (inode_sector, initial_size)
+                  && dir_add (dir, name, inode_sector));
+  if (!success && inode_sector != 0) 
+    free_map_release (inode_sector, 1);
+  dir_close (dir);
+
+  return success;
+}
+```
+
+我们要做的工作就是检验指针是否正确，然后调用该函数即可
+
+注意，在调用`filesys_create()`函数时，参数指针ptr已经加过一了，因此，我们此时参数指针ptr指向的值就是参数的第二个参数，也就是要创建文件的文件名，使用`(cinst char *)*ptr`即可取地要创建文件的文件名，第三个参数是要创建文件的大小
+
+```c
+void
+sys_create(struct intr_frame* f)
+{
+    uint32_t *ptr = f->esp;
+    // 检验指针是否正确
+    judge_pointer(ptr + 5);
+    judge_pointer(*(ptr + 4));
+    *ptr++;
+    // 申请锁
+    acquire_lock_f ();
+    // 注意*ptr此时已经指向了参数中的第二个参数
+    f->eax = filesys_create ((const char *)*ptr, *(ptr+1));
+    // 释放锁
+    release_lock_f ();
+}
+```
+
+#### `remove()`
+
+> **bool remove (const char *file)**
+>
+> 删除名为`file`的文件。如果成功，则返回`true`，否则返回`false`。无论文件是打开的还是关闭的，都可以将其删除，删除打开的文件不会将其关闭。有关详细信息，请参见删除打开的文件。
+
+删除文件这么重要的函数Pintos也很有可能帮我们写好了，在`src/filesys/filesys.c`文件中，Pintos帮我们定义了删除文件函数
+
+```c
+/* Deletes the file named NAME.
+   Returns true if successful, false on failure.
+   Fails if no file named NAME exists,
+   or if an internal memory allocation fails. */
+bool
+filesys_remove (const char *name) 
+{
+  struct dir *dir = dir_open_root ();
+  bool success = dir != NULL && dir_remove (dir, name);
+  dir_close (dir); 
+
+  return success;
+}
+```
+
+因此，类似于`create()`函数，我们检验指针正确性，并调用`filesys_remove()`函数即可
+
+```c
+void 
+sys_remove(struct intr_frame* f)
+{
+  uint32_t *ptr = f->esp;
+  // ptr：系统调用函数名
+  judge_pointer (ptr);
+  // ptr + 1：指针，系统调用第二个参数，指向系统调用第二个参数存储的地址
+  judge_pointer (ptr + 1);
+  // *(ptr + 1)：系统调用第二个参数，要删除的文件名
+  judge_pointer (*(ptr + 1));
+  // 不要忘记指针向后移一位
+  *ptr++;
+  // 申请锁
+  acquire_lock_f ();
+  // 调用filesys_remove()函数，注意将函数返回值放入寄存器eax中
+  f->eax = filesys_remove ((const char *)*ptr);
+  // 释放锁
+  release_lock_f ();
+}
+```
+
+#### `open()`
+
+> **int open (const char *file)**
+>
+> 打开名为`file`的文件。返回称为“文件描述符”（fd）的非负整数句柄，**如果无法打开文件，则返回-1**。
+> 编号为0和1的文件描述符为控制台保留：**fd 0（标准输入文件号）为标准输入，fd 1（标准输出文件号）为标准输出**。开放系统调用永远不会返回这些文件描述符中的任何一个，它们仅作为系统调用参数有效，如下所述。
+>
+> **每个进程都有一组独立的文件描述符。子进程不会继承文件描述符**。
+>
+> **当单个文件被多次打开时，无论是由单个进程还是不同的进程打开，每次打开都会返回一个新的文件描述符**。单个文件的不同文件描述符在单独的关闭调用中独立关闭，并且它们不共享文件位置。
+
+由于每个进程的文件描述符都是相互独立的，因此，我们需要在进程结构体中加入一项进程当前所拥有的全部文件描述符，又因为文件描述符都是从小到大排列，因此，我们只需要记录文件描述符中的 最大项即可
+
+```c
+// thread.h
+
+int all_fd;		  // 最大文件描述符
+```
+
+有了这个结构体成员，我们同样也需要在`init_thread()`函数中初始化，只用初始化一次，因为出去标准输入0，标准输出1，标准错误-1，所有进程的文件描述都从2开始，因此，我们只需要在创建进程的时候将`all_fd`初始化为2即可
+
+```c
+// init_thread()
+
+// 初始化所有进程最大文件描述符all_fd = 2
+t -> all_fd = 2;
+```
+
+好了，准备工作完成了，接下来我们完成系统调用`sys_open()`函数
+
+同样，Pintos为我们准备了文件打开函数`filesys_open()`，我们直接调用该函数即可，这里就不再详细说明该函数的实现过程
+
+```c
+void 
+sys_open (struct intr_frame* f)
+{
+  uint32_t *ptr = f->esp;
+  // 检查指针正确性
+  // ptr + 1指针指向系统调用第二个参数：要打开文件的文件名存放地址
+  judge_pointer (ptr + 1);
+  // *(ptr + 1)为要打开文件的文件名
+  judge_pointer (*(ptr + 1));
+  // 不要忘记指针向下移动一位
+  *ptr++;
+  // 申请锁
+  acquire_lock_f ();
+  // 调用filesys_open()函数
+  struct file * file_a = filesys_open((const char *)*ptr);
+  // 释放锁
+  release_lock_f ();
+  // 准备为当前进程添加刚刚打开的文件资源，先定义当前进程结构体
+  struct thread * t = thread_current();
+  if (file_a)
+  {
+    // 先定义进程文件结构体，并为其申请存储空间
+    struct thread_file *file_b = malloc(sizeof(struct thread_file));
+    // 赋值文件fd，利用了fd从小到大的特点
+    file_b->fd = t->all_fd++;
+    // 添加文件资源
+    file_b->file = file_a;
+    // 将复制好的进程文件结构体放入当前进程的files列表中
+    list_push_back (&t->files, &file_b->file_elem);//维护files列表
+    // 根据题意，函数返回打开文件的文件描述符，因此将打开文件的文件描述符fd放到寄存器eax中
+    f->eax = file_b->fd;
+  } 
+  else
+  {
+    // 文件无法打开，返回-1
+    f->eax = -1;
+  }
+}
+
+```
+
+又写了三个有关于文件的系统调用函数，我们来测试一下相关测试点
+
+<img src="Project 2实验手册.assets/image-20211201002747352.png" alt="image-20211201002747352" style="zoom:80%;" />
+
+<img src="Project 2实验手册.assets/image-20211201003013844.png" alt="image-20211201003013844" style="zoom:80%;" />
+
+关于`create()`函数和`open()`函数通过了对应测试点，`remove()`函数由于还没有运行到对应的测试点Pintos就因为缺失对应的系统调用而超时了，所以现在无法测试
+
+注意，先将系统调用初始化函数添加对应的系统调用函数
+
+<img src="Project 2实验手册.assets/image-20211201003323116.png" alt="image-20211201003323116" style="zoom:80%;" />
+
+#### `filesize()`
+
+> **int filesize (int fd)**
+>
+> 返回作为fd打开的文件的大小（以字节为单位）。
+
+我们再次查看相关函数，发现Pintos为我们定义了返回文件字节大小的函数`file_length()`
+
+```c
+// src/filesys/file.c
+
+/* Returns the size of FILE in bytes. */
+off_t
+file_length (struct file *file) 
+{
+  ASSERT (file != NULL);
+  return inode_length (file->inode);
+}
+```
+
+我们调用在`write()`系统调用时定义的通过文件fd找文件的函数和`file_length()`函数即可
+
+```c
+void 
+sys_filesize (struct intr_frame* f){
+  uint32_t *ptr = f->esp;
+  // ptr + 1:fd
+  judge_pointer (ptr + 1);
+  *ptr++;
+  // 文件fd对应的文件结构体
+  struct thread_file * file_a = find_file_id (*ptr);
+  if (file_a)
+  {
+    // 申请锁
+    acquire_lock_f ();
+    // 返回对应的文件长度
+    f->eax = file_length (file_a->file);
+    // 释放锁
+    release_lock_f ();
+  } 
+  else
+  {
+    // 无法打开对应文件，返回-
+    f->eax = -1;
+  }
+}
+```
+

@@ -100,6 +100,8 @@ syscall_init(void) {
     syscallArray[SYS_EXIT] = &sys_exit;
     syscallArray[SYS_WAIT] = &sys_wait;
     syscallArray[SYS_WRITE] = &sys_write;
+    syscallArray[SYS_CREATE] = &sys_create;
+    syscallArray[SYS_OPEN] = &sys_open;
 }
 
 /* 检测指针是否正确，检测系统调用号是否正确，执行系统调用 */
@@ -188,7 +190,6 @@ sys_wait (struct intr_frame* f)
 /*
  * 系统调用：write()
  */
-/* Do system write, Do writing in stdout and write in files */
 void
 sys_write (struct intr_frame* f)
 {
@@ -202,24 +203,142 @@ sys_write (struct intr_frame* f)
     const char * buffer = (const char *)*(user_ptr+1);
     // ptr + 2参数长度
     off_t size = *(user_ptr+2);
-    if (fd == 1) {//writes to the console
-        /* Use putbuf to do testing */
+    if (fd == 1) {
         putbuf(buffer,size);
-        f->eax = size;//return number written
+        f->eax = size;
     }
     else
     {
-        /* Write to Files */
         struct thread_file * thread_file_temp = find_file_id (*user_ptr);
         if (thread_file_temp)
         {
-            acquire_lock_f ();//file operating needs lock
+            acquire_lock_f ();
             f->eax = file_write (thread_file_temp->file, buffer, size);
             release_lock_f ();
         }
         else
         {
-            f->eax = 0;//can't write,return 0
+            f->eax = 0;
         }
+    }
+}
+
+/*
+ * 系统调用：create()
+ * 创建一个名为file，initially_size字节的新文件。如果成功，则返回true，否则返回false。
+ * 创建新文件不会打开它：打开新文件是一个单独的操作，需要打开系统调用。
+ */
+/* Do sytem create, we need to acquire lock for file operation in the following methods when do file operation */
+void
+sys_create(struct intr_frame* f)
+{
+    uint32_t *ptr = f->esp;
+    // 检验指针是否正确
+    judge_pointer(ptr + 5);
+    judge_pointer(*(ptr + 4));
+    *ptr++;
+    // 申请锁
+    acquire_lock_f ();
+    // 注意*ptr此时已经指向了参数中的第二个参数
+    f->eax = filesys_create ((const char *)*ptr, *(ptr+1));
+    // 释放锁
+    release_lock_f ();
+}
+
+/*
+ * 系统调用：remove()
+ * 删除名为file的文件。如果成功，则返回true，否则返回false。
+ * 无论文件是打开的还是关闭的，都可以将其删除，删除打开的文件不会将其关闭。
+ * 有关详细信息，请参见删除打开的文件。
+ */
+void
+sys_remove(struct intr_frame* f)
+{
+    uint32_t *ptr = f->esp;
+    // ptr：系统调用函数名
+    judge_pointer (ptr);
+    // ptr + 1：指针，系统调用第二个参数，指向系统调用第二个参数存储的地址
+    judge_pointer (ptr + 1);
+    // *(ptr + 1)：系统调用第二个参数，要删除的文件名
+    judge_pointer (*(ptr + 1));
+    // 不要忘记指针向后移一位
+    *ptr++;
+    // 申请锁
+    acquire_lock_f ();
+    // 调用filesys_remove()函数，注意将函数返回值放入寄存器eax中
+    f->eax = filesys_remove ((const char *)*ptr);
+    // 释放锁
+    release_lock_f ();
+}
+
+/*
+ * 系统调用：open()
+ * 您必须同步系统调用，以便任意数量的用户进程可以同时进行调用。特别是，一次从多个线程调用filesys目录中提供的文件系统代码是不安全的。
+ * 系统调用实现必须将文件系统代码视为关键部分。不要忘记，process_execute（）也会访问文件。目前，我们建议不要修改filesys目录中的代码。
+ */
+void
+sys_open (struct intr_frame* f)
+{
+    uint32_t *ptr = f->esp;
+    // 检查指针正确性
+    // ptr + 1指针指向系统调用第二个参数：要打开文件的文件名存放地址
+    judge_pointer (ptr + 1);
+    // *(ptr + 1)为要打开文件的文件名
+    judge_pointer (*(ptr + 1));
+    // 不要忘记指针向下移动一位
+    *ptr++;
+    // 申请锁
+    acquire_lock_f ();
+    // 调用filesys_open()函数
+    struct file * file_a = filesys_open((const char *)*ptr);
+    // 释放锁
+    release_lock_f ();
+    // 准备为当前进程添加刚刚打开的文件资源，先定义当前进程结构体
+    struct thread * t = thread_current();
+    if (file_a)
+    {
+        // 先定义进程文件结构体，并为其申请存储空间
+        struct thread_file *file_b = malloc(sizeof(struct thread_file));
+        // 赋值文件fd，利用了fd从小到大的特点
+        file_b->fd = t->all_fd++;
+        // 添加文件资源
+        file_b->file = file_a;
+        // 将复制好的进程文件结构体放入当前进程的files列表中
+        list_push_back (&t->files, &file_b->file_elem);//维护files列表
+        // 根据题意，函数返回打开文件的文件描述符，因此将打开文件的文件描述符fd放到寄存器eax中
+        f->eax = file_b->fd;
+    }
+    else
+    {
+        // 文件无法打开，返回-1
+        f->eax = -1;
+    }
+}
+
+/*
+ * 系统调用：filesize()
+ * 返回作为fd打开的文件的大小（以字节为单位）。
+ */
+void
+sys_filesize (struct intr_frame* f){
+    uint32_t *ptr = f->esp;
+    // ptr + 1:fd
+    judge_pointer (ptr + 1);
+    *ptr++;
+    // 文件fd对应的文件结构体
+    struct thread_file * file_a = find_file_id (*ptr);
+    if (file_a)
+    {
+        // 申请锁
+        acquire_lock_f ();
+        // 返回对应的文件长度
+        f->eax = file_length (file_a->file);
+        // 释放锁
+        release_lock_f ();
+    }
+    else
+    {
+        // 无法打开对应文件，返回-1
+        f->eax = -1;
     }
 }
