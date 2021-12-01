@@ -17,6 +17,8 @@ static void syscall_handler(struct intr_frame *);
 
 static void *judge_pointer(const void *vaddr);
 
+// static void *is_valid_pointer(void* esp,uint8_t argc);
+
 static int get_user(const uint8_t *uaddr);
 
 // 存储系统调用类型的数组syscallArray
@@ -88,6 +90,18 @@ judge_pointer(const void *vaddr) {
     return ptr;
 }
 
+bool 
+is_valid_pointer (void* esp,uint8_t argc){
+  for (uint8_t i = 0; i < argc; ++i)
+  {
+    if((!is_user_vaddr (esp)) || 
+      (pagedir_get_page (thread_current()->pagedir, esp)==NULL)){
+      return false;
+    }
+  }
+  return true;
+}
+
 // 系统调用初始化
 void
 syscall_init(void) {
@@ -102,6 +116,12 @@ syscall_init(void) {
     syscallArray[SYS_WRITE] = &sys_write;
     syscallArray[SYS_CREATE] = &sys_create;
     syscallArray[SYS_OPEN] = &sys_open;
+    syscallArray[SYS_FILESIZE] = &sys_filesize;
+    syscallArray[SYS_READ] = &sys_read;
+    syscallArray[SYS_TELL] = &sys_tell;
+    syscallArray[SYS_SEEK] = &sys_seek;
+    syscallArray[SYS_REMOVE] = &sys_remove;
+    syscallArray[SYS_CLOSE] = &sys_close;
 }
 
 /* 检测指针是否正确，检测系统调用号是否正确，执行系统调用 */
@@ -164,7 +184,7 @@ sys_exec (struct intr_frame* f)
     // 也可以用f->esp + 4来表示ptr指向下一位
     judge_pointer (ptr + 1);
     // 重点：参数需要检查，但是参数本身又是一个指针，指向了存放调用函数需要的参数地址，我们也需要检查这个指针指向的地址是否正确
-    judge_pointer (*(ptr++));
+    judge_pointer (*(++ptr));
     // 调用函数process_execute()，函数返回值是进程pid，函数返回值存放在寄存器eax中
     f->eax = process_execute((char*)* ptr);
 }
@@ -340,5 +360,139 @@ sys_filesize (struct intr_frame* f){
     {
         // 无法打开对应文件，返回-1
         f->eax = -1;
+    }
+}
+
+/*
+ * 系统调用：read()
+ * 从作为fd打开的文件中读取大小字节到缓冲区中。
+ * 返回实际读取的字节数（文件末尾为0），如果无法读取文件（由于文件结尾以外的条件），则返回-1。
+ * Fd 0使用input_getc（）从键盘读取数据。
+ */
+void
+sys_read (struct intr_frame* f)
+{
+    /*
+     * ptr：系统调用函数名，
+     * ptr + 1：想要读取的文件fd，
+     * ptr + 2：想要读入的数组地址，
+     * ptr + 3：想要读入的文件字节数。
+     */
+    uint32_t *ptr = f->esp;
+    /*judge_pointer (ptr);
+    judge_pointer (ptr + 1);
+    judge_pointer (ptr + 2);
+    *ptr++;
+    int fd = *ptr;
+    uint8_t * buffer = (uint8_t*)*(ptr+1);
+    off_t len = *(ptr+2);
+*/
+*ptr++;
+  /* We don't konw how to fix the bug, just check the pointer */
+  int fd = *ptr;
+  uint8_t * buffer = (uint8_t*)*(ptr+1);
+  off_t len = *(ptr+2);
+  if (!is_valid_pointer (buffer, 1) || !is_valid_pointer (buffer + len,1)){
+    thread_current()->exit_status = -1;
+  thread_exit ();
+  }
+    // fd = 0，标准输入，调用input_getc()函数
+    if (fd == 0)
+    {
+        for (int i = 0; i < len; i++)
+            buffer[i] = input_getc();
+        // 返回实际读到的字节数
+        f->eax = len;
+    }
+    // fd != 0，从文件读入
+    else
+    {
+        struct thread_file * file_a = find_file_id (*ptr);
+        if (file_a)
+        {
+            // 申请锁
+            acquire_lock_f ();
+            // 调用file_read()函数，函数返回值作为系统调用返回值放到寄存器eax中
+            f->eax = file_read (file_a->file, buffer, len);
+            // 释放锁
+            release_lock_f ();
+        }
+        else
+        {
+            // 无法打开文件，返回-1
+            f->eax = -1;
+        }
+    }
+}
+
+/*
+ * 系统调用：seek()
+ * 将打开文件fd中要读取或写入的下一个字节更改为位置，以文件开头的字节表示。（因此，位置0是文件的起点）
+ * 超过文件当前结尾的搜索不是错误。稍后的读取获得0字节，表示文件结束。稍后的写入扩展文件，用零填充任何未写入的间隙。
+ * （然而，在Pintos中，在项目4完成之前，文件的长度是固定的，因此写入文件末尾将返回一个错误）
+ * 这些语义在文件系统中实现，在系统调用实现中不需要任何特殊的工作。
+ */
+void
+sys_seek(struct intr_frame* f)
+{
+    uint32_t *ptr = f->esp;
+    judge_pointer (ptr + 5);
+    // *(ptr + 1)：fd
+    *ptr++;
+    // 按照fd找到文件结构体，并将文件结构体存储到文件结构体file_a中
+    struct thread_file *file_a = find_file_id (*ptr);
+    if (file_a)
+    {
+        acquire_lock_f ();
+        file_seek (file_a->file, *(ptr+1));
+        release_lock_f ();
+    } else {
+        // 文件打开错误
+        f->eax = -1;
+    }
+}
+
+/*
+ * 系统调用：tell()
+ * 返回打开文件fd中要读取或写入的下一个字节的位置，以从文件开头开始的字节数表示。
+ */
+void
+sys_tell (struct intr_frame* f)
+{
+    uint32_t *ptr = f->esp;
+    judge_pointer (ptr + 1);
+    *ptr++;
+    struct thread_file *file_a = find_file_id (*ptr);
+    if (file_a)
+    {
+        acquire_lock_f ();
+        f->eax = file_tell (file_a->file);
+        release_lock_f ();
+    }else{
+        f->eax = -1;
+    }
+}
+
+/*
+ * 系统调用：close()
+ * 关闭文件描述符fd。退出或终止进程会隐式关闭其所有打开的文件描述符，就像为每个描述符调用此函数一样。
+ */
+void
+sys_close (struct intr_frame* f)
+{
+    uint32_t *ptr = f->esp;
+    judge_pointer (ptr + 1);
+    *ptr++;
+    // 按照fd找到文件结构体，并将文件结构体存储到文件结构体file_a中
+    struct thread_file * file_a = find_file_id (*ptr);
+    if (file_a)
+    {
+        acquire_lock_f ();
+        file_close (file_a->file);
+        release_lock_f ();
+        // Pintos提供的list方法，从主结构体中移除对应列表中元素
+        list_remove (&file_a->file_elem);
+        // 释放文件资源
+        free (file_a);
     }
 }

@@ -1232,9 +1232,470 @@ sys_filesize (struct intr_frame* f){
   } 
   else
   {
-    // 无法打开对应文件，返回-
+    // 无法打开对应文件，返回-1
     f->eax = -1;
   }
 }
 ```
 
+有没有发现我们写的这几个关于文件的系统调用函数都长的有点像呢？
+
+#### `read()`
+
+> **int read (int fd, void *buffer, unsigned size)**
+>
+> 从作为fd打开的文件中读取大小字节到缓冲区中。**返回实际读取的字节数（文件末尾为0）**，如果无法读取文件（由于文件结尾以外的条件），则返回-1。`Fd` 0使用`input_getc()`从键盘读取数据。
+
+Pintos提示我们当fd = 0时使用`input_getc()`函数从键盘读取数据，如果fd != 0呢？
+
+我们可以使用Pintos在`src/filesys/file.c`文件中为我们定义的函数`file_read()`
+
+```c
+/* Reads SIZE bytes from FILE into BUFFER,
+   starting at the file's current position.
+   Returns the number of bytes actually read,
+   which may be less than SIZE if end of file is reached.
+   Advances FILE's position by the number of bytes read. */
+off_t
+file_read (struct file *file, void *buffer, off_t size) 
+{
+  off_t bytes_read = inode_read_at (file->inode, buffer, size, file->pos);
+  file->pos += bytes_read;
+  return bytes_read;
+}
+```
+
+检查指针正确性，当fd = 0时调用`input_getc()`函数，当fd != 0时调用`file_read()`函数即可，注意函数返回值是实际读到的字节数
+
+```c
+void 
+sys_read (struct intr_frame* f)
+{
+  /*
+   * ptr：系统调用函数名，
+   * ptr + 1：想要读取的文件fd，
+   * ptr + 2：想要读入的数组地址，
+   * ptr + 3：想要读入的文件字节数。
+   */
+  uint32_t *ptr = f->esp;
+  judge_pointer (ptr);
+  judge_pointer (ptr + 1);
+  judge_pointer (ptr + 2);
+  *ptr++;
+  int fd = *ptr;
+  uint8_t * buffer = (uint8_t*)*(ptr+1);
+  off_t len = *(ptr+2);
+  // fd = 0，标准输入，调用input_getc()函数
+  if (fd == 0)
+  {
+    for (int i = 0; i < len; i++)
+      buffer[i] = input_getc();
+    // 返回实际读到的字节数
+    f->eax = len;
+  }
+  // fd != 0，从文件读入
+  else
+  {
+    struct thread_file * file_a = find_file_id (*ptr);
+    if (file_a)
+    {
+      // 申请锁
+      acquire_lock_f ();
+      // 调用filesys_read()函数，函数返回值作为系统调用返回值放到寄存器eax中
+      f->eax = file_read (file_a->file, buffer, len);
+      // 释放锁
+      release_lock_f ();
+    } 
+    else
+    {
+      // 无法打开文件，返回-1
+      f->eax = -1;
+    }
+  }
+}
+```
+
+#### `seek()`
+
+> **void seek (int fd, unsigned position)**
+>
+> **将打开文件fd中要读取或写入的下一个字节更改为position**，以文件开头的字节表示。（因此，位置0是文件的起点）
+>
+> **超过文件当前结尾的搜索不是错误**。稍后的读取获得0字节，表示文件结束。稍后的写入扩展文件，用零填充任何未写入的间隙。（然而，在Pintos中，在项目4完成之前，文件的长度是固定的，因此写入文件末尾将返回一个错误）**这些语义在文件系统中实现，在系统调用实现中不需要任何特殊的工作**。
+
+Pintos实验文档写了那么多，其实总结起来就是：将打开文件fd中要读取或写入的下一个字节更改为`position`
+
+但是，更改文件读取或写入字节位置怎么实现呢？别忘了`src/filesys/file.c`文件，里面正好有我们需要的更改文件读取或写入的下一个字节位置函数`file_seek()`
+
+```c
+/* Sets the current position in FILE to NEW_POS bytes from the
+   start of the file. */
+void
+file_seek (struct file *file, off_t new_pos)
+{
+  ASSERT (file != NULL);
+  ASSERT (new_pos >= 0);
+  file->pos = new_pos;
+}
+```
+
+好像也就是将文件结构体的`pos`改为`new_pos`
+
+好了，准备工作完成了，按照上面的常规步骤，实现`sys_seek()`函数
+
+```c
+void 
+sys_seek(struct intr_frame* f)
+{
+  uint32_t *ptr = f->esp;
+  judge_pointer (ptr + 5);
+  // *(ptr + 1)：fd
+  *ptr++;
+  // 按照fd找到文件结构体，并将文件结构体存储到文件结构体file_a中
+  struct thread_file *file_a = find_file_id (*ptr);
+  if (file_a)
+  {
+    acquire_lock_f ();
+    file_seek (file_a->file, *(ptr+1));
+    release_lock_f ();
+  } else {
+      // 文件打开错误
+      f_eax = -1;
+  }
+}
+```
+
+Pintos实验文档中没有说`sys_seek()`函数如果无法打开对应文件应该如何处理，可能没有对应测试点，为了严谨，我们将无法打开文件对应返回值设置为和其他系统调用相同返回值-1
+
+#### `tell()`
+
+> **unsigned tell (int fd)**
+>
+> 返回打开文件`fd`中要读取或写入的下一个字节的位置，**以从文件开头开始的字节数表示**。
+
+Pintos为我们提供了返回文件`fd`中要读取或写入的下一个字节的位置函数`file_tell()`
+
+```c
+// src/filesys/file,c
+
+/* Returns the current position in FILE as a byte offset from the
+   start of the file. */
+off_t
+file_tell (struct file *file) 
+{
+  ASSERT (file != NULL);
+  return file->pos;
+}
+```
+
+按照前面系统调用函数的步骤，检查指针正确性，找出文件`fd`对应的文件结构体，调用`file_tell()`函数
+
+```c
+void 
+sys_tell (struct intr_frame* f)
+{
+  uint32_t *ptr = f->esp;
+  judge_pointer (ptr + 1);
+  *ptr++;
+  struct thread_file *thread_a = find_file_id (*ptr);
+  if (thread_a != null)
+  {
+    acquire_lock_f ();
+    f->eax = file_tell (thread_a->file);
+    release_lock_f ();
+  }else{
+    f->eax = -1;
+  }
+}
+
+```
+
+#### `close()`
+
+> **void close (int fd)**
+>
+> 关闭文件描述符`fd`。**退出或终止进程会隐式关闭其所有打开的文件描述符，就像为每个描述符调用此函数一样**。
+
+Pintos为我们定义了关闭文件函数`file_close()`
+
+```c
+/* Closes FILE. */
+void
+file_close (struct file *file) 
+{
+  if (file != NULL)
+    {
+      file_allow_write (file);
+      inode_close (file->inode);
+      free (file); 
+    }
+}
+```
+
+按照常规文件系统调用步骤来，检查指针正确性，按照文件`fd`找到对应文件结构体，调用`file_close()`函数
+
+```c
+void 
+sys_close (struct intr_frame* f)
+{
+  uint32_t *ptr = f->esp;
+  judge_pointer (ptr + 1);
+  *ptr++;
+  // 按照fd找到文件结构体，并将文件结构体存储到文件结构体file_a中
+  struct thread_file * file_a = find_file_id (*ptr);
+  if (file_a)
+  {
+    acquire_lock_f ();
+    file_close (file_a->file);
+    release_lock_f ();
+    // Pintos提供的list方法，从主结构体中移除对应列表中元素
+    list_remove (&file_a->file_elem);
+    // 释放文件资源
+    free (file_a);
+  }
+}
+```
+
+到现在为止，所有的系统调用已经写完了，将系统调用初始化函数补全，检查测试点
+
+```c
+// syscall_init()
+
+syscallArray[SYS_FILESIZE] = &sys_filesize;
+syscallArray[SYS_READ] = &sys_read;
+syscallArray[SYS_TELL] = &sys_tell;
+syscallArray[SYS_SEEK] = &sys_seek;
+syscallArray[SYS_REMOVE] = &sys_remove;
+syscallArray[SYS_CLOSE] = &sys_close;
+```
+
+啊哦，出错了
+
+<img src="Project 2实验手册.assets/image-20211201094301464.png" alt="image-20211201094301464" style="zoom:80%;" />
+
+原来Pintos中没有定义`null`，我们去掉` != null`直接判断
+
+<img src="Project 2实验手册.assets/image-20211201094506791.png" alt="image-20211201094506791" style="zoom:80%;" />
+
+又出错了
+
+<img src="Project 2实验手册.assets/image-20211201094656684.png" alt="image-20211201094656684" style="zoom:80%;" />
+
+`->`符号写成`_`符号，修改后再次运行Pintos
+
+坏了
+
+<img src="Project 2实验手册.assets/image-20211201095130324.png" alt="image-20211201095130324" style="zoom:80%;" />
+
+好吧，下面开始debug
+
+### debug
+
+#### 参数传递
+
+| 7    | sc-bad-arg | 将 `esp` 指向了栈顶下 4 字节（刚好放进了 `exit` 的系统调用号），试图在获取系统调用的参数时访问非法的内存区域，正常情况下应该以 exit(-1) 退出。 |
+| ---- | ---------- | ------------------------------------------------------------ |
+
+<img src="Project 2实验手册.assets/image-20211201121322633.png" alt="image-20211201121322633" style="zoom:80%;" />
+
+
+
+
+
+#### `sys_exec()`
+
+<img src="Project 2实验手册.assets/image-20211201102109083.png" alt="image-20211201102109083" style="zoom:80%;" />
+
+看来是没有输出直接判断指针错误退出了
+
+检查源代码
+
+<img src="Project 2实验手册.assets/image-20211201102128794.png" alt="image-20211201102128794" style="zoom:80%;" />
+
+原来是写成了`*(ptr++)`，导致传入的参数还是`ptr`，但是`ptr`指向的并不是指针，所以自然就报错了。将`*(ptr)`修改为`*(++ptr)`
+
+再次运行Pintos，关于`sys_exec()`测试点通过
+
+<img src="Project 2实验手册.assets/image-20211201102541745.png" alt="image-20211201102541745" style="zoom:80%;" />
+
+<img src="Project 2实验手册.assets/image-20211201102612744.png" alt="image-20211201102612744" style="zoom:80%;" />
+
+#### `rox`
+
+| 序号 | 名称           | 测试点                                                       |
+| ---- | -------------- | ------------------------------------------------------------ |
+| 54   | rox-simple     | 尝试改写自己的可执行文件（`write` 应该要返回 0）。           |
+| 55   | rox-child      | 父进程先写好子进程的可执行文件，然后执行子进程。接下来子进程尝试改写自己的可执行文件（`write` 应该要返回 0），之后会退出。然后父进程再次改写子进程的可执行文件（应该要成功）。 |
+| 56   | rox-multichild | 父进程先写好子进程的可执行文件，然后递归地创建 5 个子进程且他们都试图改写自己的可执行文件；然后递归地退出，退出前也试图改写自己的可执行文件；最后一次父进程会再次改写子进程的可执行文件（这次应该要成功）。 |
+
+这三个测试点没有通过
+
+可执行文件在 Pintos 中的定义为用来创建进程的文件，即创建进程时打开的那一个文件。`filesys/file.c` 文件中定义了函数 `file_deny_write()`，该函数可以禁止对文件的写操作。我们需要在 `load` 时，禁止对该文件的写操作，在退出时回复。
+
+同时这一块需要实现 `seek` 调用。需要用到 `file_seek()` 函数。
+
+这一块很难debug，根据助教老师的实验说明文档和网上的资料，我慢慢发现这一部分出bug的原因是因为在加载文件的过程中也有可能将文件修改，因此，我们需要在加载文件函数`load()`加入文件锁操作函数，并且在加载函数中将对应的文件加入到文件队列中，这样就可以防止在文件加载过程中出现文件被修改的情况
+
+```c
+// load.c
+
+bool
+load (const char *file_name, void (**eip) (void), void **esp) 
+{
+  struct thread *t = thread_current ();
+  struct Elf32_Ehdr ehdr;
+  struct file *file = NULL;
+  off_t file_ofs;
+  bool success = false;
+  int i;
+
+  /* Allocate and activate page directory. */
+  t->pagedir = pagedir_create ();
+  if (t->pagedir == NULL) 
+    goto done;
+  process_activate ();
+  // 申请锁
+  acquire_lock_f ();
+  /* Open executable file. */
+  file = filesys_open (file_name);
+
+  if (file == NULL) 
+    {
+      printf ("load: %s: open failed\n", file_name);
+      goto done; 
+  }
+  
+  // 修改部分
+  struct thread_file *thread_file_temp = malloc(sizeof(struct thread_file));
+  thread_file_temp->file = file;
+  // 加入队列
+  list_push_back (&thread_current()->files, &thread_file_temp->file_elem);
+  // 加载过程禁止写入
+  file_deny_write(file);
+  /* Read and verify executable header. */
+  if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
+      || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
+      || ehdr.e_type != 2
+      || ehdr.e_machine != 3
+      || ehdr.e_version != 1
+      || ehdr.e_phentsize != sizeof (struct Elf32_Phdr)
+      || ehdr.e_phnum > 1024) 
+    {
+      printf ("load: %s: error loading executable\n", file_name);
+      goto done; 
+    }
+
+  /* Read program headers. */
+  file_ofs = ehdr.e_phoff;
+  for (i = 0; i < ehdr.e_phnum; i++) 
+    {
+      struct Elf32_Phdr phdr;
+
+      if (file_ofs < 0 || file_ofs > file_length (file))
+        goto done;
+      file_seek (file, file_ofs);
+
+      if (file_read (file, &phdr, sizeof phdr) != sizeof phdr)
+        goto done;
+      file_ofs += sizeof phdr;
+      switch (phdr.p_type) 
+        {
+        case PT_NULL:
+        case PT_NOTE:
+        case PT_PHDR:
+        case PT_STACK:
+        default:
+          /* Ignore this segment. */
+          break;
+        case PT_DYNAMIC:
+        case PT_INTERP:
+        case PT_SHLIB:
+          goto done;
+        case PT_LOAD:
+          if (validate_segment (&phdr, file)) 
+            {
+              bool writable = (phdr.p_flags & PF_W) != 0;
+              uint32_t file_page = phdr.p_offset & ~PGMASK;
+              uint32_t mem_page = phdr.p_vaddr & ~PGMASK;
+              uint32_t page_offset = phdr.p_vaddr & PGMASK;
+              uint32_t read_bytes, zero_bytes;
+              if (phdr.p_filesz > 0)
+                {
+                  /* Normal segment.
+                     Read initial part from disk and zero the rest. */
+                  read_bytes = page_offset + phdr.p_filesz;
+                  zero_bytes = (ROUND_UP (page_offset + phdr.p_memsz, PGSIZE)
+                                - read_bytes);
+                }
+              else 
+                {
+                  /* Entirely zero.
+                     Don't read anything from disk. */
+                  read_bytes = 0;
+                  zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
+                }
+              if (!load_segment (file, file_page, (void *) mem_page,
+                                 read_bytes, zero_bytes, writable))
+                goto done;
+            }
+          else
+            goto done;
+          break;
+        }
+    }
+
+  /* Set up stack. */
+  if (!setup_stack (esp))
+    goto done;
+
+  /* Start address. */
+  *eip = (void (*) (void)) ehdr.e_entry;
+
+  success = true;
+
+ done:
+  /* We arrive here whether the load is successful or not. */
+  // 释放锁
+  release_lock_f();
+  return success;
+}
+```
+
+这一部分真的找了好久资料
+
+好了，修改完后我们再次运行Pintos
+
+<img src="Project 2实验手册.assets/image-20211201105558924.png" alt="image-20211201105558924" style="zoom:80%;" />
+
+我们发现，错误点从7个变成了两个，最后一个测试点和倒数第三个测试点也通过了，可能这两个测试点与`load()`函数修改有关
+
+#### `multi`
+
+<img src="Project 2实验手册.assets/image-20211201105854321.png" alt="image-20211201105854321" style="zoom:80%;" />
+
+资源释放
+
+| 序号 | 名称      | 测试点                                           |
+| ---- | --------- | ------------------------------------------------ |
+| 63   | multi-oom | 全实验最难的一个点，但也有可能是最简单的一个点。 |
+
+该部分旨在探究同学们编码过程中，对于资源的合理理由，务必要做到每一个资源申请后，都会有释放。包括前面提到的文件的退出，消除开辟的内存空间，同时注意到进程退出时，关闭所有打开的文件，以及 `open`、`close`、`create`、`remove`、`execute`、`wait` 等所有过程中开辟的空间都需要关闭。
+
+看起来他的报错信息是因为
+
+<img src="Project 2实验手册.assets/image-20211201120846313.png" alt="image-20211201120846313" style="zoom:80%;" />
+
+断言判断错误，而`is_use_vddr(uaddr)`函数其实很简单
+
+```c
+is_user_vaddr (const void *vaddr) 
+{
+  return vaddr < PHYS_BASE;
+}
+```
+
+而结合第一个报错点`sc-bad-args`
+
+<img src="Project 2实验手册.assets/image-20211201121116633.png" alt="image-20211201121116633" style="zoom:80%;" />
+
+两者的报错信息几乎一样，因此我们合理推测`multi-oom`报错点是因为`sc-bad-args`报错点导致的，见参数传递

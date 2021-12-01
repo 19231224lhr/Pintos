@@ -226,6 +226,7 @@ process_exit (void)
   pd = cur->pagedir;
   printf ("%s: exit(%d)\n",cur->name, cur->exit_status); /* 打印name以及return值 */ 
 // printf("*************");
+
   if (pd != NULL) 
     {
       /* Correct ordering here is crucial.  We must set
@@ -345,15 +346,24 @@ load (const char *file_name, void (**eip) (void), void **esp)
   if (t->pagedir == NULL) 
     goto done;
   process_activate ();
-
+  // 申请锁
+  acquire_lock_f ();
   /* Open executable file. */
   file = filesys_open (file_name);
+
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", file_name);
       goto done; 
-    }
-
+  }
+  
+  // 修改部分
+  struct thread_file *thread_file_temp = malloc(sizeof(struct thread_file));
+  thread_file_temp->file = file;
+  // 加入队列
+  list_push_back (&thread_current()->files, &thread_file_temp->file_elem);
+  // 加载过程禁止写入
+  file_deny_write(file);
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
@@ -437,10 +447,11 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  // 释放锁
+  release_lock_f();
   return success;
 }
-
+
 /* load() helpers. */
 
 static bool install_page (void *upage, void *kpage, bool writable);
