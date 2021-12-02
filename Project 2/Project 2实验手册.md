@@ -1278,9 +1278,14 @@ sys_read (struct intr_frame* f)
    * ptr + 3：想要读入的文件字节数。
    */
   uint32_t *ptr = f->esp;
-  judge_pointer (ptr);
+  /*judge_pointer (ptr);
   judge_pointer (ptr + 1);
   judge_pointer (ptr + 2);
+  *ptr++;
+  int fd = *ptr;
+  uint8_t * buffer = (uint8_t*)*(ptr+1);
+  off_t len = *(ptr+2);
+  */
   *ptr++;
   int fd = *ptr;
   uint8_t * buffer = (uint8_t*)*(ptr+1);
@@ -1498,7 +1503,7 @@ syscallArray[SYS_CLOSE] = &sys_close;
 
 <img src="Project 2实验手册.assets/image-20211201121322633.png" alt="image-20211201121322633" style="zoom:80%;" />
 
-
+见`multi`测试点
 
 
 
@@ -1699,3 +1704,47 @@ is_user_vaddr (const void *vaddr)
 <img src="Project 2实验手册.assets/image-20211201121116633.png" alt="image-20211201121116633" style="zoom:80%;" />
 
 两者的报错信息几乎一样，因此我们合理推测`multi-oom`报错点是因为`sc-bad-args`报错点导致的，见参数传递
+
+既然报错信息是在函数`pagedir_get_page()`中的断言中，调用`is_user_vaddr(uaddr)`函数报错，那么我们就在调用`pagedir_get_page()`函数前就使用`is_user_vaddr(uaddr)`函数判断，如果判断结果为`false`，则直接以`-1`退出即可。
+
+修改`judge_pointer()`函数
+
+```c
+// 判断指针指向内存的合理性
+void *
+judge_pointer(const void *vaddr) {
+	if(!is_user_vaddr(vaddr)) {
+		// 设置线程状态值为-1，表示线程错误
+       	thread_current()->exit_status = -1;
+        // 线程退出
+        thread_exit();
+	}
+    void *ptr = pagedir_get_page(thread_current()->pagedir, vaddr);
+    /* 判断是否属于用户地址空间，空间是否已经被映射（有效性） */
+    if (!is_user_vaddr(vaddr) || ptr == NULL) {
+        // 设置线程状态值为-1，表示线程错误
+        thread_current()->exit_status = -1;
+        // 线程退出
+        thread_exit();
+    }
+    /* 广度范围上的判断 */
+    uint8_t *check_byteptr = (uint8_t *) vaddr;
+    // 注意，最多加到3，因为4的时候已经跳出了一个内存单位
+    for (uint8_t i = 0; i < 4; i++) {
+        // 判断辅助函数
+        if (get_user(check_byteptr + i) == -1) {
+            thread_current()->exit_status = -1;
+            thread_exit();
+        }
+    }
+    return ptr;
+}
+```
+
+再次测试
+
+<img src="Project 2实验手册.assets/image-20211201234737968.png" alt="image-20211201234737968" style="zoom:80%;" />
+
+<img src="Project 2实验手册.assets/image-20211201234846776.png" alt="image-20211201234846776" style="zoom:80%;" />
+
+测试点全部通过，bingo!
