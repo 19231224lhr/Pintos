@@ -252,7 +252,7 @@ get_user (const uint8_t *uaddr)
 
 读取用户虚拟地址UADDR处的字节。UADDR必须低于PHYS_BASE。如果成功，则返回字节值；如果发生segfault，则返回-1。
 
-这个函数我们也需要定义在`syscall.c`文件中，因为我们需要+4来判断用户调用的指针指向的虚拟地址是否指向了内核存储空间。
+这个函数我们也需要定义在`syscall.c`文件中，因为我们需要+4来判断用户调用的指针指向的虚拟地址是否指向了参数空间外的存储空间。
 
 #### `page_fault()`
 
@@ -497,6 +497,10 @@ sys_halt (struct intr_frame* f)
 > 终止当前用户程序，将状态返回内核。如果进程的父进程等待它（见下文），则将返回此状态。通常，状态为0表示成功，非零值表示错误。
 
 ```c
+/*
+ * 系统调用：exit()
+ * 终止当前用户程序，将状态返回内核。如果进程的父进程等待它（见下文），则将返回此状态。通常，状态为0表示成功，非零值表示错误。
+ */
 void
 sys_exit(struct intr_frame *f) {
     uint32_t *ptr = f->esp;
@@ -505,12 +509,16 @@ sys_exit(struct intr_frame *f) {
     judge_pointer(ptr + 1);
     // 指针移动，指向第一个参数
     *ptr++;
-    // 第一个参数保存了int status，将其保存在进程状态中
-    thread_current()->st_exit = *ptr;
+    // 第一个参数保存了进程的退出状态，将其保存在进程状态中
+    thread_current()->exit_status = *ptr;
     // 进程退出
     thread_exit();
 }
 ```
+
+进程的结构体
+
+<img src="Project 2实验手册.assets/image-20211202150626148.png" alt="image-20211202150626148" style="zoom:80%;" />
 
 **不要忘记移动指针**。
 
@@ -1044,8 +1052,8 @@ sys_create(struct intr_frame* f)
 {
     uint32_t *ptr = f->esp;
     // 检验指针是否正确
-    judge_pointer(ptr + 5);
-    judge_pointer(*(ptr + 4));
+    judge_pointer(ptr + 1);
+    judge_pointer(*(ptr + 1));
     *ptr++;
     // 申请锁
     acquire_lock_f ();
@@ -1353,7 +1361,7 @@ void
 sys_seek(struct intr_frame* f)
 {
   uint32_t *ptr = f->esp;
-  judge_pointer (ptr + 5);
+  judge_pointer (ptr + 1);
   // *(ptr + 1)：fd
   *ptr++;
   // 按照fd找到文件结构体，并将文件结构体存储到文件结构体file_a中
